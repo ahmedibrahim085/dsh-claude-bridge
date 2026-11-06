@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-06
+
+### Added
+
+- dsh can message a **running** Claude Code session: tool `send_to_claude` (`message`, optional `cwd`) in every configured profile, through dsh's MCP client and the new `bin/dsh-claude-channel` server. The message arrives at once, even in an idle session, as a Claude Code channel event.
+- `claude-dsh`: starts Claude Code with that channel loaded for this session only (`--mcp-config`), so other sessions start nothing (the server is about 37 MB per session). Uses Claude Code channels, a research preview.
+- `CHANNEL=1|0` in the config; `setup` writes `~/.config/dsh-claude-bridge/channel-mcp.json`, `doctor` checks it, `uninstall` removes it.
+- Tests: 5 channel-server tests with real processes and sockets; setup/uninstall tests; `clean-install.sh` checks the new pieces.
+
 ## [0.2.4] - 2026-11-06
 
 ### Added
@@ -88,7 +97,8 @@ First release, as `dsh-turn-events`.
 
 Known limit: the plugin listens to dsh's internal `agent/turn-stopping` event, which is not a documented public API.
 
-[Unreleased]: https://github.com/ahmedibrahim085/dsh-claude-bridge/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/dsh-claude-bridge/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/ahmedibrahim085/dsh-claude-bridge/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/ahmedibrahim085/dsh-claude-bridge/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/ahmedibrahim085/dsh-claude-bridge/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/ahmedibrahim085/dsh-claude-bridge/compare/v0.2.1...v0.2.2

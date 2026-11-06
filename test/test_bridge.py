@@ -58,6 +58,15 @@ class BlockTests(unittest.TestCase):
         self.assertNotIn("subagent-claude-code", bridge.managed_block(cfg(HELPERS="none"), "web"))
         self.assertNotIn("- id: subagent-claude-code\n", bridge.managed_block(cfg(HELPERS="claude"), "web"))
 
+    def test_every_profile_gets_the_channel_tool_unless_disabled(self):
+        for p in ("web", "acp", "headless"):
+            b = bridge.managed_block(cfg(), p)
+            self.assertIn("    - id: dsh-claude-channel\n      name: '@deepseek-ai/dsh-mcp-client'", b)
+            self.assertIn("serverName: claude", b)
+            self.assertIn("/dsh-claude-channel", b.split("command:", 1)[1].split("\n", 1)[0])
+            self.assertIn("args: ['--role', 'dsh']", b)
+        self.assertNotIn("dsh-claude-channel", bridge.managed_block(cfg(CHANNEL="0"), "web"))
+
     def test_block_never_contains_the_key(self):
         for p in ("web", "acp", "headless"):
             self.assertNotIn("sk-test-123", bridge.managed_block(cfg(), p))
@@ -203,6 +212,19 @@ class UninstallTests(unittest.TestCase):
         self.assertFalse((self.home / ".local/share/mcacp").exists())
         self.assertTrue(bridge.CONFIG.exists())
         self.assertTrue(bridge.EVENTS.exists())
+
+    def test_deletes_the_channel_config_only_when_it_is_ours(self):
+        cm = bridge.channel_mcp_file()
+        cm.write_text(__import__("json").dumps(bridge.channel_mcp(self.c)))
+        self.assertEqual(bridge.uninstall(self.c, dry_run=False, purge=False), 0)
+        self.assertFalse(cm.exists())
+        cm.write_text('{"mcpServers": {"mine": {"command": "/somebody/else"}}}')
+        bridge.uninstall(self.c, dry_run=False, purge=False)
+        self.assertTrue(cm.exists())
+
+    def test_channel_config_points_claude_at_the_linked_server(self):
+        server = bridge.channel_mcp(self.c)["mcpServers"]["dsh-channel"]
+        self.assertEqual(server, {"command": str(self.home / "bin/dsh-claude-channel"), "args": ["--role", "claude"]})
 
     def test_purge_also_removes_config_and_events(self):
         bridge.uninstall(self.c, dry_run=False, purge=True)

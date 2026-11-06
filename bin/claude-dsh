@@ -1,0 +1,11 @@
+#!/bin/sh
+# claude-dsh: start Claude Code so that dsh can push messages into this session (dsh tool send_to_claude).
+# It loads the dsh-channel server only for this session (--mcp-config), so other Claude sessions start
+# nothing. Channels are a Claude Code research preview: the development flag below shows a one-time
+# warning that lists only server:dsh-channel. All other arguments go to `claude` unchanged.
+cfg="${DSH_BRIDGE_CHANNEL_CONFIG:-$HOME/.config/dsh-claude-bridge/channel-mcp.json}"
+if [ ! -f "$cfg" ]; then
+  echo "claude-dsh: $cfg not found; run: dsh-claude-bridge setup" >&2
+  exit 2
+fi
+exec claude --mcp-config "$cfg" --dangerously-load-development-channels server:dsh-channel "$@"

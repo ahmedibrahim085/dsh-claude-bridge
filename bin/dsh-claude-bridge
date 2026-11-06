@@ -23,7 +23,8 @@ EVENTS = Path(os.environ.get("DSH_TURN_EVENTS_FILE", HOME / ".local/state/dsh-ev
 BEGIN = "# >>> dsh-claude-bridge managed block: edit the bridge config, then run `dsh-claude-bridge setup` >>>"
 END = "# <<< dsh-claude-bridge managed block <<<"
 MANAGED_IDS = ["llm-pi-ai", "agent-default-model", "acp", "subagent-claude-code",
-               "subagent-claude-code-claude", "tool-subagent-claude-code-claude"]
+               "subagent-claude-code-claude", "tool-subagent-claude-code-claude", "dsh-claude-channel"]
+BINS = ("dsh-claude-bridge", "dsh-wait-turn", "dsh-turns", "dsh-claude-channel", "claude-dsh")
 ACPX_VERSION = "0.21.1"   # tested with dsh 0.2.2-rc.1 on 2026-11-06
 MCACP_VERSION = "0.1.3"   # upstream pins an old zod; installed with a zod>=4.6.6 override
 MIN_NODE = (24, 9)        # dsh 0.2.x engines.node
@@ -47,6 +48,9 @@ HELPERS=both
 HELPER_PERMISSION_MODE=auto
 # Register mcacp (MCP access to dsh) in Claude Code: 1 or 0.
 MCACP=1
+# dsh -> running Claude Code session: give dsh the send_to_claude tool and install `claude-dsh`, which
+# starts Claude Code able to receive those messages (Claude Code channels, research preview): 1 or 0.
+CHANNEL=1
 # Extra environment variables passed through to dsh (space-separated names), e.g. a Codex proxy key.
 PASS_ENV=
 BIN_DIR=~/.local/bin
@@ -75,7 +79,7 @@ def load_config():
     c = read_kv(CONFIG)
     defaults = {"PROVIDER_API": "anthropic-messages", "PROVIDER_KEY_VAR": "ANTHROPIC_AUTH_TOKEN",
                 "PROFILES": "web acp headless", "HELPERS": "both", "HELPER_PERMISSION_MODE": "auto",
-                "MCACP": "1", "PASS_ENV": "", "BIN_DIR": "~/.local/bin"}
+                "MCACP": "1", "CHANNEL": "1", "PASS_ENV": "", "BIN_DIR": "~/.local/bin"}
     for k, v in defaults.items():
         c.setdefault(k, v) if c.get(k) else c.__setitem__(k, v)
     c["MODELS_LIST"] = c.get("MODELS", "").split()
@@ -192,6 +196,11 @@ def managed_block(c, profile):
               "    - id: tool-subagent-claude-code-claude", "      name: '@deepseek-ai/dsh-tool-subagent'",
               "      config:", "        provider: claude-code-claude", "        toolName: subagent_claude_code_claude",
               "        maxDepth: provider-managed"]
+    if c.get("CHANNEL", "1") == "1":
+        y += ["# dsh -> running Claude Code session: tool mcp__claude__send_to_claude (bin/dsh-claude-channel).",
+              "- insert:", "    - id: dsh-claude-channel", "      name: '@deepseek-ai/dsh-mcp-client'",
+              "      config:", "        serverName: claude", "        transport: stdio",
+              f"        command: {c['BIN_DIR_PATH'] / 'dsh-claude-channel'}", "        args: ['--role', 'dsh']"]
     return "\n".join(y + [END]) + "\n"
 
 
@@ -330,7 +339,7 @@ def check(c, live=False):
         agent = json.loads(cfg.read_text()).get("agents", {}).get("dsh", {}).get("command", "") if cfg.exists() else ""
         (r.ok(f"acpx {acpx} with agent dsh") if "dsh-claude-bridge" in agent
          else r.miss("acpx agent `dsh`", "dsh-claude-bridge setup"))
-    for b in ("dsh-claude-bridge", "dsh-wait-turn", "dsh-turns"):
+    for b in BINS:
         (r.ok(f"{b} on PATH") if shutil.which(b) else r.miss(f"{b} not on PATH", f"dsh-claude-bridge setup (links into {c['BIN_DIR']}; add it to PATH)"))
     skill = HOME / ".claude/skills/dsh-harness/SKILL.md"
     (r.ok("Claude Code skill dsh-harness") if skill.exists() else r.miss("Claude Code skill dsh-harness", "dsh-claude-bridge setup"))
@@ -341,6 +350,10 @@ def check(c, live=False):
              else r.miss("mcacp MCP server in Claude Code", "dsh-claude-bridge setup"))
         else:
             r.warn("claude CLI not found: mcacp skipped", "install Claude Code or set MCACP=0")
+    if c.get("CHANNEL", "1") == "1":
+        cm = channel_mcp_file()
+        (r.ok(f"channel config {cm} (start Claude Code with `claude-dsh` to receive from dsh)")
+         if cm.exists() and json.loads(cm.read_text()) == channel_mcp(c) else r.miss(f"channel config {cm}", "dsh-claude-bridge setup"))
     if live and not r.missing:
         live_check(c, r)
     return r
@@ -429,7 +442,7 @@ def setup(c, source):
 
     bin_dir = c["BIN_DIR_PATH"]
     bin_dir.mkdir(parents=True, exist_ok=True)
-    for b in ("dsh-claude-bridge", "dsh-wait-turn", "dsh-turns"):
+    for b in BINS:
         done = place_link(bin_dir / b, PKG / "bin" / b, HOME / ".local/state/dsh-claude-bridge/backups")
         if done:
             step(f"{bin_dir / b}: {done}")
@@ -491,11 +504,26 @@ def setup(c, source):
         if rc != 0:
             rc, out = sh(["claude", "mcp", "add", "--scope", "user", "mcacp", "--", node, str(mdir / "node_modules/mcacp/dist/index.js")], timeout=60)
             step(f"mcacp {'registered in Claude Code' if rc == 0 else 'registration FAILED: ' + out[-300:]}")
+    if c.get("CHANNEL", "1") == "1":
+        cm = channel_mcp_file()
+        if not cm.exists() or json.loads(cm.read_text()) != channel_mcp(c):
+            cm.parent.mkdir(parents=True, exist_ok=True)
+            cm.write_text(json.dumps(channel_mcp(c), indent=2) + "\n")
+            step(f"channel config written: {cm} (start Claude Code with `claude-dsh` to receive from dsh)")
     if failed:
         print(f"setup finished with {len(failed)} failed step(s); fix them and re-run setup")
         return 1
     print("setup done; restart any running dsh host so it loads the profile changes, then run `dsh-claude-bridge doctor`")
     return 0
+
+
+def channel_mcp_file():
+    """--mcp-config file `claude-dsh` passes to Claude Code (written by setup, next to the config)."""
+    return CONFIG.parent / "channel-mcp.json"
+
+
+def channel_mcp(c):
+    return {"mcpServers": {"dsh-channel": {"command": str(c["BIN_DIR_PATH"] / "dsh-claude-channel"), "args": ["--role", "claude"]}}}
 
 
 def bridge_owned(link):
@@ -520,7 +548,7 @@ def uninstall(c, dry_run=False, purge=False):
         rc, out = sh(args, timeout=600)
         return out[-300:] if rc else None
 
-    for link in [c["BIN_DIR_PATH"] / b for b in ("dsh-claude-bridge", "dsh-wait-turn", "dsh-turns")] + [HOME / ".claude/skills/dsh-harness"]:
+    for link in [c["BIN_DIR_PATH"] / b for b in BINS] + [HOME / ".claude/skills/dsh-harness"]:
         if bridge_owned(link):
             do(f"remove link {link}", link.unlink)
 
@@ -547,6 +575,10 @@ def uninstall(c, dry_run=False, purge=False):
         if (mdir / "package.json").exists() and json.loads((mdir / "package.json").read_text()).get("name") == "mcacp-local":
             do(f"delete {mdir} (installed by setup)", lambda: shutil.rmtree(mdir))
         do(f"delete {mjson}", mjson.unlink)
+
+    cm = channel_mcp_file()
+    if cm.exists() and "dsh-claude-channel" in cm.read_text():
+        do(f"delete {cm}", cm.unlink)
 
     node, dsh_bin = find_node(), find_dsh_bin()
     # web last: this CLI runs from the web profile's copy of the package.

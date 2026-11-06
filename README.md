@@ -5,6 +5,7 @@
 | Direction | What you get |
 |---|---|
 | Claude Code → dsh | Multi-turn, resumable dsh sessions from Claude Code through [acpx](https://www.npmjs.com/package/acpx) (shell) or [mcacp](https://www.npmjs.com/package/mcacp) (MCP tools), plus headless one-shots |
+| dsh → a running Claude Code session | dsh gets a `send_to_claude` tool; the message arrives at once in a Claude session started with `claude-dsh`, even while it is idle ([Claude Code channels](https://code.claude.com/docs/en/channels), research preview) |
 | dsh → Claude Code: "done" | A dsh plugin writes one JSON line per finished turn; `dsh-wait-turn` blocks on it without polling, a Claude Code Monitor wakes on it, `dsh-turns` reads the answer |
 | dsh → Claude Code: "do this" | Two Claude Code helpers inside dsh: `subagent_claude_code` on your dsh provider, `subagent_claude_code_claude` on Claude with your Claude Code login |
 | Claude Code knows how | The `dsh-harness` skill: checks the setup first, then picks the right surface |
@@ -16,7 +17,7 @@
 Requires macOS or Linux, Node ≥ 24.9, Python 3, `zstd`, and [dsh 0.2.x](https://www.npmjs.com/package/@deepseek-ai/dsh) (`npm install -g @deepseek-ai/dsh`). Claude Code is optional (needed for the skill to be useful and for mcacp).
 
 ```bash
-dsh plugin --profile web add github:ahmedibrahim085/dsh-claude-bridge#v0.2.4
+dsh plugin --profile web add github:ahmedibrahim085/dsh-claude-bridge#v0.3.0
 ~/.dsh/profiles/web/node_modules/dsh-claude-bridge/bin/dsh-claude-bridge setup
 ```
 
@@ -48,7 +49,7 @@ BIN_DIR=~/.local/bin
 Run the two install commands with the new tag. The new `setup` moves your other profiles to the same release and keeps your config:
 
 ```bash
-dsh plugin --profile web add github:ahmedibrahim085/dsh-claude-bridge#v0.2.4
+dsh plugin --profile web add github:ahmedibrahim085/dsh-claude-bridge#v0.3.0
 ~/.dsh/profiles/web/node_modules/dsh-claude-bridge/bin/dsh-claude-bridge setup
 ```
 
@@ -61,7 +62,7 @@ dsh-claude-bridge uninstall --dry-run    # list what would be removed; changes n
 dsh-claude-bridge uninstall              # remove it; add --purge to delete your config and turn events too
 ```
 
-`uninstall` removes only what `setup` made: the plugin and the managed block in each profile, the links and the skill, the acpx `dsh` agent, and mcacp's `dsh` agent (plus mcacp itself when no other agent uses it). Your own profile entries, dsh, pnpm and acpx stay. Restart any running dsh host afterwards.
+`uninstall` removes only what `setup` made: the plugin and the managed block in each profile, the links and the skill, the channel config, the acpx `dsh` agent, and mcacp's `dsh` agent (plus mcacp itself when no other agent uses it). Your own profile entries, dsh, pnpm and acpx stay. Restart any running dsh host afterwards.
 
 ### What `setup` does
 
@@ -90,6 +91,8 @@ dsh-turns --since 1h                            # what dsh answered
 
 For several dsh sessions at once, use the mcacp MCP tools from Claude Code: all sessions share one dsh process. The `dsh-harness` skill does this on its own for three or more sessions.
 
+To let dsh message you while you work, start Claude Code with `claude-dsh` instead of `claude` (same arguments). Claude Code shows a one-time warning that lists `server:dsh-channel`; choose "I am using this for local development". dsh can then call `send_to_claude` ("tell Claude the tests pass"), optionally with `cwd` to reach only the session working in that folder. Only sessions started this way load the channel server (about 37 MB each), so your other sessions start nothing.
+
 Inside dsh, ask for a helper by name, e.g. "use subagent_claude_code_claude to review this diff". The helper runs in the background; its result arrives as a later turn.
 
 Event line (`~/.local/state/dsh-events/turns.jsonl`):
@@ -113,6 +116,7 @@ dsh notification plugins (`dsh-notify-tray`, `dsh-notify-plugin`, `dsh-notify-me
 - Turn events use dsh's internal `agent/turn-stopping` event, which is not a public API. [MAINTENANCE.md](MAINTENANCE.md) lists every piece an update can break and the check for it.
 - The provider helper needs an Anthropic-compatible endpoint (`PROVIDER_API=anthropic-messages`).
 - The helper tools are added at host level; agent presets that list their own tool rows need a row for each helper.
+- `send_to_claude` uses Claude Code channels, a research preview: the flag in `claude-dsh` is for local development, works in interactive sessions only (not `claude -p`), and needs Anthropic sign-in (tested with a claude.ai login; the docs disagree about Console API keys). Messages travel over a Unix socket only you can open (`~/.local/state/dsh-claude-bridge/channels`, mode 0700).
 - `dsh-wait-turn` uses kernel file events on macOS/BSD and a 1-second size check elsewhere.
 - Parallel sessions, measured on a 24 GB, 14-core Mac with a GLM provider (2026-11-06):
   - **Claude Code → dsh**: through **mcacp** every session runs in one dsh process; 16 at once answered in 9 s at 502 MB, 32 sessions in one dsh process peaked at 478 MB. Through **acpx** each session is its own dsh process, about 320 MB; 16 at once answered in 18 s at 5.2 GB. The skill sends parallel work to mcacp.
