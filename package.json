@@ -21,20 +21,24 @@
     "LICENSE"
   ],
   "dsh": {
+    "manifestVersion": 1,
     "bundle": {
       "patch": "./cordis.patch.yml"
-    }
-  },
-  "peerDependencies": {
-    "@deepseek-ai/dsh-agent": ">=0.2.2-rc.1 <0.3.0-0"
-  },
-  "peerDependenciesMeta": {
-    "@deepseek-ai/dsh-agent": {
-      "optional": true
+    },
+    "catalog": {
+      "category": "notify",
+      "summary": "Writes one JSON line per finished dsh turn so other agents, scripts and CI can react without polling.",
+      "capabilities": [
+        "turn-events-jsonl",
+        "event-driven-wait-cli",
+        "no-shell",
+        "no-network"
+      ]
     }
   },
   "engines": {
-    "node": ">=24.9.0"
+    "node": ">=24.9.0",
+    "dsh": ">=0.2.2-rc.1 <0.3.0"
   },
   "scripts": {
     "test": "node --test test/ && sh test/wait-turn.test.sh"
