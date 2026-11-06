@@ -16,7 +16,7 @@
 Requires macOS or Linux, Node ≥ 24.9, Python 3, `zstd`, and [dsh 0.2.x](https://www.npmjs.com/package/@deepseek-ai/dsh) (`npm install -g @deepseek-ai/dsh`). Claude Code is optional (needed for the skill to be useful and for mcacp).
 
 ```bash
-dsh plugin --profile web add github:ahmedibrahim085/dsh-claude-bridge#v0.2.3
+dsh plugin --profile web add github:ahmedibrahim085/dsh-claude-bridge#v0.2.4
 ~/.dsh/profiles/web/node_modules/dsh-claude-bridge/bin/dsh-claude-bridge setup
 ```
 
@@ -48,11 +48,20 @@ BIN_DIR=~/.local/bin
 Run the two install commands with the new tag. The new `setup` moves your other profiles to the same release and keeps your config:
 
 ```bash
-dsh plugin --profile web add github:ahmedibrahim085/dsh-claude-bridge#v0.2.3
+dsh plugin --profile web add github:ahmedibrahim085/dsh-claude-bridge#v0.2.4
 ~/.dsh/profiles/web/node_modules/dsh-claude-bridge/bin/dsh-claude-bridge setup
 ```
 
 Restart any running dsh host, then run `dsh-claude-bridge doctor --live`. Read [CHANGELOG.md](CHANGELOG.md) first for changes marked **BREAKING**.
+
+### Uninstall
+
+```bash
+dsh-claude-bridge uninstall --dry-run    # list what would be removed; changes nothing
+dsh-claude-bridge uninstall              # remove it; add --purge to delete your config and turn events too
+```
+
+`uninstall` removes only what `setup` made: the plugin and the managed block in each profile, the links and the skill, the acpx `dsh` agent, and mcacp's `dsh` agent (plus mcacp itself when no other agent uses it). Your own profile entries, dsh, pnpm and acpx stay. Restart any running dsh host afterwards.
 
 ### What `setup` does
 

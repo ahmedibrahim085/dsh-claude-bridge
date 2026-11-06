@@ -141,6 +141,101 @@ class LiveCleanupTests(unittest.TestCase):
         self.assertTrue((root / "ws" / "keep").exists())
 
 
+class UninstallTests(unittest.TestCase):
+    """uninstall removes only what setup made; `sh` is stubbed so no real dsh/claude/acpx is touched."""
+
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp())
+        self.saved = {k: getattr(bridge, k) for k in ("HOME", "DSH_HOME", "CONFIG", "EVENTS", "sh", "find_node", "find_dsh_bin")}
+        bridge.HOME, bridge.DSH_HOME = self.home, self.home / ".dsh"
+        bridge.EVENTS = self.home / ".local/state/dsh-events/turns.jsonl"
+        self.calls = []
+        bridge.sh = lambda args, **kw: (self.calls.append(list(map(str, args))) or (0, ""))
+        bridge.find_node, bridge.find_dsh_bin = (lambda: "/usr/bin/node"), (lambda: Path("/x/dsh/lib/bin.js"))
+        self.c = cfg(BIN_DIR=str(self.home / "bin"), PROFILES="web acp")
+        bridge.CONFIG = self.home / "config"; (self.home / "config").write_text("PROVIDER_ID=x\n")
+        pkg = self.home / "pkg/dsh-claude-bridge"
+        for b in ("dsh-claude-bridge", "dsh-wait-turn", "dsh-turns"):
+            (pkg / "bin").mkdir(parents=True, exist_ok=True); (pkg / "bin" / b).write_text("x")
+        (pkg / "skills/dsh-harness").mkdir(parents=True)
+        (self.home / "bin").mkdir()
+        for b in ("dsh-claude-bridge", "dsh-wait-turn"):
+            (self.home / "bin" / b).symlink_to(pkg / "bin" / b)
+        (self.home / "bin/dsh-turns").write_text("someone else's script")
+        (self.home / ".claude/skills").mkdir(parents=True)
+        (self.home / ".claude/skills/dsh-harness").symlink_to(pkg / "skills/dsh-harness")
+        for p in ("web", "acp"):
+            pd = self.home / ".dsh/profiles" / p; pd.mkdir(parents=True)
+            (pd / "cordis.patch.yml").write_text("# mine\n- id: keep-me\n\n" + bridge.managed_block(self.c, p))
+            (pd / "package.json").write_text('{"dependencies": {"dsh-claude-bridge": "github:x#v1", "other": "1"}}')
+        (self.home / ".acpx").mkdir()
+        (self.home / ".acpx/config.json").write_text('{"agents": {"dsh": {"command": "/b/dsh-claude-bridge run --profile acp"}, "codex": {"command": "codex"}}}')
+        (self.home / ".config/mcacp").mkdir(parents=True)
+        (self.home / ".config/mcacp/mcacp.json").write_text('{"agent_servers": {"dsh": {"command": "/b/dsh-claude-bridge", "args": []}}}')
+        (self.home / ".local/share/mcacp").mkdir(parents=True)
+        (self.home / ".local/share/mcacp/package.json").write_text('{"name": "mcacp-local"}')
+        bridge.EVENTS.parent.mkdir(parents=True); bridge.EVENTS.write_text("{}\n")
+
+    def tearDown(self):
+        for k, v in self.saved.items():
+            setattr(bridge, k, v)
+
+    def test_dry_run_changes_nothing(self):
+        before = sorted(str(p) for p in self.home.rglob("*"))
+        self.assertEqual(bridge.uninstall(self.c, dry_run=True, purge=True), 0)
+        self.assertEqual(sorted(str(p) for p in self.home.rglob("*")), before)
+        self.assertEqual(self.calls, [])
+
+    def test_removes_only_what_setup_made(self):
+        self.assertEqual(bridge.uninstall(self.c, dry_run=False, purge=False), 0)
+        for p in ("web", "acp"):
+            text = (self.home / ".dsh/profiles" / p / "cordis.patch.yml").read_text()
+            self.assertNotIn(bridge.BEGIN, text)
+            self.assertIn("- id: keep-me", text)
+        self.assertFalse(os.path.lexists(self.home / "bin/dsh-claude-bridge"))
+        self.assertEqual((self.home / "bin/dsh-turns").read_text(), "someone else's script")
+        self.assertFalse(os.path.lexists(self.home / ".claude/skills/dsh-harness"))
+        acpx = __import__("json").loads((self.home / ".acpx/config.json").read_text())
+        self.assertEqual(list(acpx["agents"]), ["codex"])
+        removes = [c for c in self.calls if "remove" in c and "dsh-claude-bridge" in c]
+        self.assertEqual([c[c.index("--profile") + 1] for c in removes], ["acp", "web"])  # web last: this CLI lives there
+        self.assertIn(["claude", "mcp", "remove", "mcacp", "-s", "user"], self.calls)
+        self.assertFalse((self.home / ".local/share/mcacp").exists())
+        self.assertTrue(bridge.CONFIG.exists())
+        self.assertTrue(bridge.EVENTS.exists())
+
+    def test_purge_also_removes_config_and_events(self):
+        bridge.uninstall(self.c, dry_run=False, purge=True)
+        self.assertFalse(bridge.CONFIG.exists())
+        self.assertFalse(bridge.EVENTS.exists())
+
+    def test_keeps_mcacp_when_it_serves_other_agents(self):
+        (self.home / ".config/mcacp/mcacp.json").write_text(
+            '{"agent_servers": {"dsh": {"command": "/b/dsh-claude-bridge"}, "gemini": {"command": "gemini"}}}')
+        bridge.uninstall(self.c, dry_run=False, purge=False)
+        self.assertNotIn(["claude", "mcp", "remove", "mcacp", "-s", "user"], self.calls)
+        self.assertTrue((self.home / ".local/share/mcacp").exists())
+        servers = __import__("json").loads((self.home / ".config/mcacp/mcacp.json").read_text())["agent_servers"]
+        self.assertEqual(list(servers), ["gemini"])
+
+    def test_second_run_finds_nothing(self):
+        bridge.uninstall(self.c, dry_run=False, purge=False)
+        self.calls.clear()
+        for p in ("web", "acp"):
+            (self.home / ".dsh/profiles" / p / "package.json").write_text('{"dependencies": {"other": "1"}}')
+        self.assertEqual(bridge.uninstall(self.c, dry_run=False, purge=False), 0)
+        self.assertEqual(self.calls, [])
+
+
+class CliTests(unittest.TestCase):
+    def test_every_subcommand_parses(self):
+        import subprocess, sys
+        for cmd in ([], ["doctor"], ["setup"], ["run"], ["uninstall"]):
+            r = subprocess.run([sys.executable, str(BIN), *cmd, "--help"], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, f"{cmd}: {r.stderr[-300:]}")
+        self.assertIn("--dry-run", subprocess.run([sys.executable, str(BIN), "uninstall", "--help"], capture_output=True, text=True).stdout)
+
+
 class EnvTests(unittest.TestCase):
     def test_clean_env_has_key_under_bridge_name_only(self):
         os.environ["ANTHROPIC_BASE_URL"] = "https://leak.example"

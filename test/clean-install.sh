@@ -51,3 +51,39 @@ grep -q "live: dsh answered through acpx" "$tmp/d1" || fail "no live answer"
 grep -q "live: turn event written" "$tmp/d1" || fail "no live turn event"
 cat "$tmp/d1"
 echo "ok - clean install passes doctor --live"
+
+echo "== uninstall --dry-run (changes nothing)"
+# ~/.npm/_logs is excluded: every npm call (here `npm prefix -g`, to locate dsh) writes a debug log there.
+snap() { find "$HOME" -type f -not -path "$HOME/.npm/_logs/*" -exec shasum {} + | sort; }
+snap > "$tmp/f0"
+"$HOME/.local/bin/dsh-claude-bridge" uninstall --dry-run > "$tmp/u0" 2>&1 || { cat "$tmp/u0"; fail "dry run failed"; }
+snap > "$tmp/f1"
+diff "$tmp/f0" "$tmp/f1" > "$tmp/fdiff" || { cat "$tmp/fdiff"; fail "dry run changed files"; }
+echo "ok - dry run lists $(grep -c '^- would' "$tmp/u0") actions, no file changed"
+
+echo "== uninstall"
+"$HOME/.local/bin/dsh-claude-bridge" uninstall > "$tmp/u1" 2>&1 || { cat "$tmp/u1"; fail "uninstall failed"; }
+cat "$tmp/u1"
+for b in dsh-claude-bridge dsh-wait-turn dsh-turns; do [ ! -e "$HOME/.local/bin/$b" ] && [ ! -L "$HOME/.local/bin/$b" ] || fail "$b link left"; done
+[ ! -L "$HOME/.claude/skills/dsh-harness" ] || fail "skill link left"
+for p in web acp headless; do
+  ! grep -q "dsh-claude-bridge managed block" "$HOME/.dsh/profiles/$p/cordis.patch.yml" || fail "managed block left in $p"
+  ! grep -q '"dsh-claude-bridge"' "$HOME/.dsh/profiles/$p/package.json" || fail "plugin left in $p"
+done
+! grep -q "dsh-claude-bridge" "$HOME/.acpx/config.json" || fail "acpx dsh agent left"
+if [ "${MCACP:-1}" = 1 ] && command -v claude >/dev/null; then
+  ! claude mcp get mcacp >/dev/null 2>&1 || fail "mcacp still registered"
+  [ ! -e "$HOME/.local/share/mcacp" ] || fail "mcacp install left"
+fi
+[ -f "$HOME/.config/dsh-claude-bridge/config" ] || fail "config removed without --purge"
+echo "ok - uninstall removed every piece and kept the config"
+
+echo "== uninstall again (nothing left)"
+"$repo/bin/dsh-claude-bridge" uninstall > "$tmp/u2" 2>&1 || { cat "$tmp/u2"; fail "second uninstall failed"; }
+grep -q "nothing to remove" "$tmp/u2" || { cat "$tmp/u2"; fail "second uninstall found pieces"; }
+echo "ok - second uninstall found nothing"
+
+echo "== setup after uninstall (reinstall works)"
+"$repo/bin/dsh-claude-bridge" setup --source "file:$repo" > "$tmp/s3" 2>&1 || { cat "$tmp/s3"; fail "reinstall failed"; }
+"$HOME/.local/bin/dsh-claude-bridge" doctor > "$tmp/d2" 2>&1 || { cat "$tmp/d2"; fail "doctor after reinstall"; }
+echo "ok - reinstall passes doctor"

@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-11-06
+
+### Added
+
+- `dsh-claude-bridge uninstall [--dry-run] [--purge]`: removes only what `setup` made (plugin and managed block per profile, links, skill, acpx and mcacp `dsh` agents, and mcacp when nothing else uses it). `--purge` also deletes the config, turn events and helper state. `test/clean-install.sh` now uninstalls, checks nothing is left, and reinstalls.
+
+### Fixed
+
+- The CLI usage text listed a `setup --yes` flag that does not exist; it now shows `setup [--source SPEC]` and `uninstall`.
+
 ## [0.2.3] - 2026-11-06
 
 ### Changed
@@ -78,7 +88,8 @@ First release, as `dsh-turn-events`.
 
 Known limit: the plugin listens to dsh's internal `agent/turn-stopping` event, which is not a documented public API.
 
-[Unreleased]: https://github.com/ahmedibrahim085/dsh-claude-bridge/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/dsh-claude-bridge/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/ahmedibrahim085/dsh-claude-bridge/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/ahmedibrahim085/dsh-claude-bridge/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/ahmedibrahim085/dsh-claude-bridge/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/ahmedibrahim085/dsh-claude-bridge/compare/v0.2.0...v0.2.1

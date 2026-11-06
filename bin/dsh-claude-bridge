@@ -2,9 +2,11 @@
 """dsh-claude-bridge: set up, check and launch the Claude Code <-> DeepSeek Harness (dsh) bridge.
 
   dsh-claude-bridge doctor [--live]      check every piece; --live also runs one real dsh turn
-  dsh-claude-bridge setup [--yes]        install or repair what doctor reports missing (safe to re-run)
+  dsh-claude-bridge setup [--source SPEC] install or repair what doctor reports missing (safe to re-run)
   dsh-claude-bridge run --profile P [-- dsh args]
                                          start dsh with a clean environment and the provider key
+  dsh-claude-bridge uninstall [--dry-run] [--purge]
+                                         undo setup; --purge also deletes the config and turn events
 
 Configuration: ~/.config/dsh-claude-bridge/config (or DSH_BRIDGE_CONFIG), KEY=VALUE lines.
 `setup` writes a commented template on first use. Keys are read from PROVIDER_KEY_FILE at run time
@@ -496,6 +498,89 @@ def setup(c, source):
     return 0
 
 
+def bridge_owned(link):
+    """A symlink setup made: it points into a dsh-claude-bridge package. Anything else is left alone."""
+    return link.is_symlink() and "/dsh-claude-bridge/" in os.readlink(link)
+
+
+def uninstall(c, dry_run=False, purge=False):
+    """Undo setup. Removes only what setup made; shared tools (dsh, pnpm, acpx) stay."""
+    c = c or {"PROFILES_LIST": ["web", "acp", "headless"], "BIN_DIR_PATH": HOME / ".local/bin"}
+    acted, failed = [], []
+    def do(msg, fn):
+        acted.append(msg)
+        print(f"- {'would ' if dry_run else ''}{msg}", flush=True)
+        if not dry_run:
+            err = fn()
+            if err:
+                failed.append(msg)
+                print(f"  FAILED: {err}")
+
+    def ran(args):  # sh() result -> error text, or None on success
+        rc, out = sh(args, timeout=600)
+        return out[-300:] if rc else None
+
+    for link in [c["BIN_DIR_PATH"] / b for b in ("dsh-claude-bridge", "dsh-wait-turn", "dsh-turns")] + [HOME / ".claude/skills/dsh-harness"]:
+        if bridge_owned(link):
+            do(f"remove link {link}", link.unlink)
+
+    def drop(path, outer, key):
+        """Remove data[outer][key] when it starts dsh through the bridge; True if found."""
+        if not path.exists():
+            return False
+        data = json.loads(path.read_text())
+        entry = data.get(outer, {}).get(key)
+        if not entry or "dsh-claude-bridge" not in json.dumps(entry):
+            return False
+        def write():
+            del data[outer][key]
+            path.write_text(json.dumps(data, indent=2) + "\n")
+        do(f"remove `{key}` from {path}", write)
+        return True
+
+    drop(HOME / ".acpx/config.json", "agents", "dsh")
+    mjson = HOME / ".config/mcacp/mcacp.json"
+    others = [k for k in (json.loads(mjson.read_text()).get("agent_servers", {}) if mjson.exists() else {}) if k != "dsh"]
+    if drop(mjson, "agent_servers", "dsh") and not others:
+        do("unregister mcacp from Claude Code", lambda: ran(["claude", "mcp", "remove", "mcacp", "-s", "user"]))
+        mdir = HOME / ".local/share/mcacp"
+        if (mdir / "package.json").exists() and json.loads((mdir / "package.json").read_text()).get("name") == "mcacp-local":
+            do(f"delete {mdir} (installed by setup)", lambda: shutil.rmtree(mdir))
+        do(f"delete {mjson}", mjson.unlink)
+
+    node, dsh_bin = find_node(), find_dsh_bin()
+    # web last: this CLI runs from the web profile's copy of the package.
+    for p in sorted(c["PROFILES_LIST"], key=lambda p: p == "web"):
+        pdir = DSH_HOME / "profiles" / p
+        pf = pdir / "cordis.patch.yml"
+        if pf.exists() and split_patch(pf.read_text())[1] is not None:
+            def strip(pf=pf):
+                before, _, after = split_patch(pf.read_text())
+                pf.write_text(before.rstrip("\n") + "\n" + (("\n" + after) if after.strip() else ""))
+            do(f"remove the managed block from {pf}", strip)
+        deps = json.loads((pdir / "package.json").read_text()).get("dependencies", {}) if (pdir / "package.json").exists() else {}
+        if "dsh-claude-bridge" in deps:
+            if not node or not dsh_bin:
+                print(f"! profile {p}: need Node >= 24.9 and dsh to remove the plugin")
+                failed.append(p)
+                continue
+            do(f"remove plugin dsh-claude-bridge from profile {p}",
+               lambda p=p: ran([node, str(dsh_bin), "plugin", "--profile", p, "remove", "dsh-claude-bridge"]))
+
+    if purge:
+        for path in (CONFIG, EVENTS, HOME / ".local/state/dsh-claude-bridge", DSH_HOME / "claude-code-provider"):
+            if path.exists():
+                do(f"delete {path}", (lambda q=path: shutil.rmtree(q)) if path.is_dir() else path.unlink)
+
+    if not acted:
+        print("nothing to remove")
+    print("kept: dsh, pnpm, acpx, @deepseek-ai/dsh-subagent-claude-code and the one-dsh-copy override in your profiles"
+          + ("" if purge else f"; your config ({CONFIG}) and turn events ({EVENTS}): add --purge to delete them"))
+    if acted and not dry_run:
+        print("restart any running dsh host so it unloads the plugin")
+    return 1 if failed else 0
+
+
 def fix_single_dsh(pdir, dsh_bin, env, node, c):
     """A plugin that depends on @deepseek-ai/dsh installs a second copy; two dsh-app-boot copies break settings saves."""
     ws = pdir / "pnpm-workspace.yaml"
@@ -525,6 +610,9 @@ def main():
     s = sub.add_parser("setup")
     s.add_argument("--source", help="plugin spec for `dsh plugin add` (default: this release on GitHub)")
     r = sub.add_parser("run"); r.add_argument("--profile", required=True); r.add_argument("args", nargs=argparse.REMAINDER)
+    u = sub.add_parser("uninstall", help="undo setup; shared tools stay")
+    u.add_argument("--dry-run", action="store_true", help="print what would be removed")
+    u.add_argument("--purge", action="store_true", help="also delete the config, turn events and helper state")
     a = ap.parse_args()
     c = load_config()
     if a.cmd == "doctor":
@@ -534,6 +622,8 @@ def main():
     if a.cmd == "setup":
         version = json.loads((PKG / "package.json").read_text())["version"]
         return setup(c, a.source or f"github:ahmedibrahim085/dsh-claude-bridge#v{version}")
+    if a.cmd == "uninstall":
+        return uninstall(c, a.dry_run, a.purge)
     if a.cmd == "run":
         run(c, a.profile, [x for x in a.args if x != "--"] if a.args[:1] == ["--"] else a.args)
 
