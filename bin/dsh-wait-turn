@@ -8,7 +8,7 @@ second. Lines come from the dsh-turn-events plugin (DSH_TURN_EVENTS_FILE overrid
 
 Usage:
   dsh-wait-turn [--session ID] [--cwd PATH] [--timeout SECONDS]
-    --session  match a dsh session id (prefix or suffix)
+    --session  match a dsh session id (any part of it, e.g. the short id d06e3c3a)
     --cwd      match the session's working directory (use this with acpx: its ids differ from dsh's)
     --timeout  give up after SECONDS (default 1800); exit 2 on timeout, 0 when a turn matched
 """
@@ -20,7 +20,7 @@ EVENTS = Path(os.environ.get("DSH_TURN_EVENTS_FILE", Path.home() / ".local/state
 
 def matches(ev, a):
     sid = ev.get("session_id") or ""
-    if a.session and not (sid.startswith(a.session) or sid.endswith(a.session)):
+    if a.session and a.session not in sid:
         return False
     if a.cwd and os.path.realpath(ev.get("cwd") or "") != os.path.realpath(a.cwd):
         return False

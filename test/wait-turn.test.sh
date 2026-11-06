@@ -26,3 +26,12 @@ rc=$?
 set -e
 [ "$rc" -eq 2 ] || fail "timeout exit was $rc, want 2"
 echo "ok - timeout exits 2"
+
+# dsh web ids look like session-<uuid>; users pass the short id from the middle.
+"$here/bin/dsh-wait-turn" --session d06e3c3a --timeout 10 > "$tmp/out2" &
+pid=$!
+sleep 1
+printf '{"session_id":"session-d06e3c3a-5af2-417c-a283-bd7534bf1608","turn":7}\n' >> "$DSH_TURN_EVENTS_FILE"
+wait "$pid" || fail "short id inside session-<uuid> did not match"
+grep -q '"turn": 7' "$tmp/out2" || fail "wrong event for short id: $(cat "$tmp/out2")"
+echo "ok - matches a short id inside session-<uuid>"

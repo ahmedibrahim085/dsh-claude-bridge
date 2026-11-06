@@ -10,7 +10,7 @@ One JSON line per finished turn:
 Usage:
   dsh-turns                      turns that finished since the last call (cursor in ~/.local/state)
   dsh-turns --since 10m          turns finished in the last 10 minutes (s/m/h/d), cursor untouched
-  dsh-turns --session ID         only that session (id prefix or suffix is enough)
+  dsh-turns --session ID         only that session (any part of the id is enough)
 """
 import argparse, json, os, re, subprocess, sys, time
 from pathlib import Path
@@ -78,7 +78,7 @@ def finished_turns(path, after_ms):
 def scan(after_ms, session=None):
     found = []
     for p in log_files(after_ms):
-        if session and not p.parent.name.startswith(session) and not p.parent.name.endswith(session):
+        if session and session not in p.parent.name:
             continue
         found.extend(finished_turns(p, after_ms))
     return sorted(found, key=lambda r: r["time_ms"])
