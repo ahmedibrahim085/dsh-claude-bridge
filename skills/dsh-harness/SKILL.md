@@ -23,11 +23,12 @@ dsh plugin --profile web add github:ahmedibrahim085/dsh-claude-bridge   # only i
 
 ## Pick a surface
 
-**Default: acpx.** Use mcacp only when tool calls fit better than shell commands, and headless only for a single answer.
+**Default: acpx** for one or two dsh sessions. **Three or more dsh sessions at the same time: mcacp.** mcacp runs every session inside one dsh process; acpx starts one dsh process per session. Measured with 16 sessions: 502 MB through mcacp against 5.2 GB through acpx. Headless only for a single answer.
 
 | Need | Surface |
 |---|---|
 | Multi-turn work, long tasks, resume across restarts | `acpx … dsh …` (Bash) |
+| Several dsh sessions working in parallel (fan-out) | `mcacp` server: one `new_session` per task, `prompt_start` on all, then `prompt` on each |
 | Driving dsh through MCP tools | `mcacp` server (`mcp__mcacp__*`) |
 | One answer, then exit | `dsh-claude-bridge run --profile headless -- "task"` |
 
@@ -60,7 +61,7 @@ The agent id is `dsh`. Call, in order:
 3. `mcp__mcacp__prompt_start` with `{sessionId, prompt}`
 4. `mcp__mcacp__prompt` with `{sessionId}`, repeated until the turn reports complete
 
-`mcp__mcacp__load_session` resumes, `mcp__mcacp__list_sessions` lists, `mcp__mcacp__shutdown` stops the agent. mcacp cannot switch models; sessions use the bridge's default model.
+`mcp__mcacp__load_session` resumes, `mcp__mcacp__list_sessions` lists, `mcp__mcacp__shutdown` stops the agent. Call `shutdown` when the work is done: the shared dsh process (about 400 MB) otherwise stays up for as long as Claude Code runs. mcacp cannot switch models; sessions use the bridge's default model.
 
 ## Knowing when dsh finished
 
@@ -95,5 +96,6 @@ The child runs **in the background**: the turn that starts it ends with "started
 
 - Start dsh only through `dsh-claude-bridge run` (or a launcher that calls it). A dsh started from a shell holding provider `ANTHROPIC_*` variables passes them to every Claude Code helper, so the Claude helper silently uses the provider.
 - Helper failures show in dsh only as `stage: query-run; category: invalid-result`. Provider helper `401`: a claude.ai login outranked the provider key (the bridge gives it its own config dir). Claude helper `OAuth session expired`: something set `CLAUDE_CONFIG_DIR`.
-- Parallel work: each acpx session is its own dsh process (about 320 MB); 16 at once were tested. One dsh session runs at most 8 Claude Code helpers at a time; a 9th is refused with `subagent limit reached`, so queue the rest or wait for one to finish.
+- Parallel work: each acpx session is its own dsh process (about 320 MB), so fan out through mcacp, where 16 sessions share one process. Close acpx sessions you no longer need (`acpx dsh sessions close <task>`); an idle one keeps its process for 5 minutes.
+- Helpers: one dsh session runs 8 Claude Code helpers at a time by default (`maxActiveSubagents` of the `subagent` entry; the cap counts per root session and can be raised). A 9th is refused with `subagent limit reached`. Each helper is a full Claude Code process (about 200 MB, about 1 core while it starts), so start large batches in waves.
 - After a dsh update, or when anything here stops working, read `MAINTENANCE.md` in the bridge package (`~/.dsh/profiles/web/node_modules/dsh-claude-bridge/`): each piece, why an update can break it, and the check.

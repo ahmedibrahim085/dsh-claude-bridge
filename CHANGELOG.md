@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.3 — 2026-11-06
+
+- The `dsh-harness` skill sends three or more parallel dsh sessions to mcacp, which runs them in one dsh process (16 sessions: 502 MB) instead of acpx's one process per session (16 sessions: 5.2 GB). New eval case `parallel-fanout-uses-mcacp`.
+- Docs: measured helper cost (about 200 MB each), raising the helper cap past 8, and both directions under load at once.
+
 ## 0.2.2 — 2026-11-06
 
 - `setup` replaces old symlinks in place (no backup clutter) and moves only real files or folders to a backup dir outside the link dir (`~/.local/state/dsh-claude-bridge/backups`, `~/.claude/skills-backup`).

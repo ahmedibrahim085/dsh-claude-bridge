@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: parallel-fanout-uses-mcacp
+expected_outcome: |
+  Four dsh sessions are opened through mcacp (one dsh process), prompted in parallel, and all four replies FAN-1-OK..FAN-4-OK are reported.
