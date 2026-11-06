@@ -43,6 +43,17 @@ PASS_ENV=                                             # extra variables to pass 
 BIN_DIR=~/.local/bin
 ```
 
+### Upgrade
+
+Run the two install commands with the new tag. The new `setup` moves your other profiles to the same release and keeps your config:
+
+```bash
+dsh plugin --profile web add github:ahmedibrahim085/dsh-claude-bridge#v0.2.3
+~/.dsh/profiles/web/node_modules/dsh-claude-bridge/bin/dsh-claude-bridge setup
+```
+
+Restart any running dsh host, then run `dsh-claude-bridge doctor --live`. Read [CHANGELOG.md](CHANGELOG.md) first for changes marked **BREAKING**.
+
 ### What `setup` does
 
 - Links `dsh-claude-bridge`, `dsh-wait-turn` and `dsh-turns` into `BIN_DIR`, and the skill into `~/.claude/skills/dsh-harness`.
@@ -67,6 +78,8 @@ acpx --approve-all dsh prompt -s build --no-wait "run the tests and fix failures
 dsh-wait-turn --cwd "$PWD" --timeout 3600       # returns when that turn ends; exit 2 = timeout
 dsh-turns --since 1h                            # what dsh answered
 ```
+
+For several dsh sessions at once, use the mcacp MCP tools from Claude Code: all sessions share one dsh process. The `dsh-harness` skill does this on its own for three or more sessions.
 
 Inside dsh, ask for a helper by name, e.g. "use subagent_claude_code_claude to review this diff". The helper runs in the background; its result arrives as a later turn.
 
@@ -106,6 +119,10 @@ PROVIDER_ID=… PROVIDER_BASE_URL=… PROVIDER_KEY_FILE=… MODELS=… sh test/c
 ```
 
 The `skills/dsh-harness/evals/` cases follow the `claude plugin eval` layout.
+
+## Versioning
+
+[Semantic Versioning](https://semver.org/); every release is listed in [CHANGELOG.md](CHANGELOG.md) and on the [releases page](https://github.com/ahmedibrahim085/dsh-claude-bridge/releases).
 
 ## License
 
