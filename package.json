@@ -1,0 +1,59 @@
+{
+  "name": "dsh-turn-events",
+  "version": "0.1.0",
+  "description": "Machine-readable finished-turn events for DeepSeek Harness (dsh): one JSONL line per turn, plus an event-driven wait CLI so Claude Code, scripts and CI can react when dsh is done.",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "dsh-wait-turn": "bin/dsh-wait-turn",
+    "dsh-turns": "bin/dsh-turns"
+  },
+  "files": [
+    "index.mjs",
+    "cordis.patch.yml",
+    "bin/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-agent": ">=0.2.2-rc.1 <0.3.0-0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-agent": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=24.9.0"
+  },
+  "scripts": {
+    "test": "node --test test/ && sh test/wait-turn.test.sh"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "dsh",
+    "deepseek-harness",
+    "events",
+    "notifications",
+    "agents",
+    "claude-code",
+    "acp"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ahmedibrahim085/dsh-turn-events.git"
+  },
+  "homepage": "https://github.com/ahmedibrahim085/dsh-turn-events#readme",
+  "bugs": "https://github.com/ahmedibrahim085/dsh-turn-events/issues",
+  "license": "MIT"
+}

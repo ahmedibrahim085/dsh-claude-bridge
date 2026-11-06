@@ -1,0 +1,28 @@
+#!/bin/sh
+# dsh-wait-turn: matches by session, ignores other sessions, rebuilds a line split across writes,
+# and exits 2 on timeout. Uses a temp event file; never touches a real dsh install.
+set -eu
+here=$(cd "$(dirname "$0")/.." && pwd)
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+export DSH_TURN_EVENTS_FILE="$tmp/turns.jsonl"
+: > "$DSH_TURN_EVENTS_FILE"
+fail() { echo "FAIL: $1"; exit 1; }
+
+"$here/bin/dsh-wait-turn" --session abc --timeout 10 > "$tmp/out" &
+pid=$!
+sleep 1
+printf '{"session_id":"zzz","cwd":"/x"}\n{"session_id":"abc-1","cw' >> "$DSH_TURN_EVENTS_FILE"
+sleep 1
+printf 'd":"/y","turn":2}\n' >> "$DSH_TURN_EVENTS_FILE"
+wait "$pid" || fail "wait exited non-zero on a matching turn"
+grep -q '"session_id": "abc-1"' "$tmp/out" || fail "wrong or missing event: $(cat "$tmp/out")"
+grep -q '"turn": 2' "$tmp/out" || fail "split line not rebuilt"
+echo "ok - matches session, skips others, rebuilds split line"
+
+set +e
+"$here/bin/dsh-wait-turn" --session nope --timeout 1 2>/dev/null
+rc=$?
+set -e
+[ "$rc" -eq 2 ] || fail "timeout exit was $rc, want 2"
+echo "ok - timeout exits 2"
