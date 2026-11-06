@@ -16,7 +16,7 @@
 Requires macOS or Linux, Node ≥ 24.9, Python 3, `zstd`, and [dsh 0.2.x](https://www.npmjs.com/package/@deepseek-ai/dsh) (`npm install -g @deepseek-ai/dsh`). Claude Code is optional (needed for the skill to be useful and for mcacp).
 
 ```bash
-dsh plugin --profile web add github:ahmedibrahim085/dsh-claude-bridge#v0.2.0
+dsh plugin --profile web add github:ahmedibrahim085/dsh-claude-bridge#v0.2.1
 ~/.dsh/profiles/web/node_modules/dsh-claude-bridge/bin/dsh-claude-bridge setup
 ```
 

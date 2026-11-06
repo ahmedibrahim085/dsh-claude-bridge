@@ -396,7 +396,10 @@ def setup(c, source):
     if not (target.is_symlink() and target.resolve() == (PKG / "skills/dsh-harness").resolve()):
         skills.mkdir(parents=True, exist_ok=True)
         if target.exists() or target.is_symlink():
-            target.rename(skills / f"dsh-harness.before-bridge-{int(time.time())}")
+            backup = HOME / ".claude/skills-backup" / f"dsh-harness.before-bridge-{int(time.time())}"
+            backup.parent.mkdir(parents=True, exist_ok=True)  # outside skills/, or Claude Code loads it twice
+            target.rename(backup)
+            step(f"previous skill moved to {backup}")
         target.symlink_to(PKG / "skills/dsh-harness")
         step(f"linked skill {target}")
 

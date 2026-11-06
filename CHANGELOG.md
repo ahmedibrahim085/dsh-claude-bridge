@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1 — 2026-11-06
+
+- `setup` moves an existing `~/.claude/skills/dsh-harness` to `~/.claude/skills-backup/` instead of renaming it inside `skills/`, where Claude Code would load both copies.
+
 ## 0.2.0 — 2026-11-06
 
 Renamed from `dsh-turn-events` to **`dsh-claude-bridge`**: one package for everything that connects Claude Code and dsh. The plugin id is now `dsh-claude-bridge`; `setup` removes the old `dsh-turn-events` entry from your profiles.
