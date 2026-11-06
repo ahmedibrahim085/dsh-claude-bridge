@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-06
+
+### Fixed
+
+- `dsh-wait-turn` only reads an existing event file. It used to `touch` it, which dsh's sandboxed shell refuses (`PermissionError: Operation not permitted`), so dsh could not wait for Claude (or for another dsh session). Tested under a no-write `sandbox-exec` profile and live from a dsh turn.
+
 ## [0.4.0] - 2026-11-06
 
 ### Added
@@ -106,7 +112,8 @@ First release, as `dsh-turn-events`.
 
 Known limit: the plugin listens to dsh's internal `agent/turn-stopping` event, which is not a documented public API.
 
-[Unreleased]: https://github.com/ahmedibrahim085/dsh-claude-bridge/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/dsh-claude-bridge/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/ahmedibrahim085/dsh-claude-bridge/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/ahmedibrahim085/dsh-claude-bridge/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ahmedibrahim085/dsh-claude-bridge/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/ahmedibrahim085/dsh-claude-bridge/compare/v0.2.3...v0.2.4

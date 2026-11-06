@@ -46,3 +46,16 @@ printf '{"event":"stop","session_id":"c-1","cwd":"/work","last_assistant_message
 wait "$pid" || fail "--claude did not match a Claude stop event"
 grep -q '"session_id": "c-1"' "$tmp/out3" || fail "--claude returned the wrong event: $(cat "$tmp/out3")"
 echo "ok - --claude waits on Claude's events, not dsh's"
+
+# dsh runs shell commands in a sandbox that denies writes: the waiter must only read an existing file.
+if command -v sandbox-exec >/dev/null 2>&1; then
+  : > "$tmp/ro.jsonl"
+  DSH_TURN_EVENTS_FILE="$tmp/ro.jsonl" sandbox-exec -p "(version 1)(allow default)(deny file-write* (subpath \"$(cd "$tmp" && pwd -P)\"))" \
+    "$here/bin/dsh-wait-turn" --session ro --timeout 10 > "$tmp/out4" 2> "$tmp/err4" &
+  pid=$!
+  sleep 1
+  printf '{"session_id":"ro-1"}\n' >> "$tmp/ro.jsonl"
+  wait "$pid" || fail "waiter failed without write access: $(cat "$tmp/err4")"
+  grep -q '"ro-1"' "$tmp/out4" || fail "no event under a no-write sandbox"
+  echo "ok - waits with read-only access (dsh sandbox)"
+fi

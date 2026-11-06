@@ -42,9 +42,19 @@ def main():
     ap.add_argument("--timeout", type=float, default=1800)
     a = ap.parse_args()
     EVENTS = events_file(a.claude)
-    EVENTS.parent.mkdir(parents=True, exist_ok=True)
-    EVENTS.touch(exist_ok=True)
     deadline = time.monotonic() + a.timeout
+    # Only read: dsh runs shell commands in a sandbox that denies writes, and `touch` on an existing file
+    # is a write. Create the file only when it is missing; if even that is denied, wait for it to appear.
+    if not EVENTS.exists():
+        try:
+            EVENTS.parent.mkdir(parents=True, exist_ok=True)
+            EVENTS.touch()
+        except OSError:
+            while not EVENTS.exists():
+                if time.monotonic() >= deadline:
+                    print(json.dumps({"timeout": True, "session": a.session, "cwd": a.cwd}), file=sys.stderr)
+                    return 2
+                time.sleep(1)
     with open(EVENTS, "rb") as fh:
         fh.seek(0, os.SEEK_END)  # only turns that finish from now on
         if hasattr(select, "kqueue"):  # macOS / BSD: the kernel wakes us on each write, no polling
