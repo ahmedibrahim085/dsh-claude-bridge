@@ -53,6 +53,7 @@ cat "$tmp/d1"
 for p in web acp headless; do grep -q "id: dsh-claude-channel" "$HOME/.dsh/profiles/$p/cordis.patch.yml" || fail "no send_to_claude entry in $p"; done
 [ -x "$HOME/.local/bin/claude-dsh" ] || fail "claude-dsh not linked"
 grep -q "dsh-claude-channel" "$HOME/.config/dsh-claude-bridge/channel-mcp.json" || fail "channel config missing"
+grep -q "/claude-turn-event" "$HOME/.claude/settings.json" || fail "Stop hook missing from settings.json"
 echo "ok - clean install passes doctor --live"
 
 echo "== uninstall --dry-run (changes nothing)"
@@ -67,7 +68,7 @@ echo "ok - dry run lists $(grep -c '^- would' "$tmp/u0") actions, no file change
 echo "== uninstall"
 "$HOME/.local/bin/dsh-claude-bridge" uninstall > "$tmp/u1" 2>&1 || { cat "$tmp/u1"; fail "uninstall failed"; }
 cat "$tmp/u1"
-for b in dsh-claude-bridge dsh-wait-turn dsh-turns dsh-claude-channel claude-dsh; do [ ! -e "$HOME/.local/bin/$b" ] && [ ! -L "$HOME/.local/bin/$b" ] || fail "$b link left"; done
+for b in dsh-claude-bridge dsh-wait-turn dsh-turns dsh-claude-channel claude-dsh claude-turn-event; do [ ! -e "$HOME/.local/bin/$b" ] && [ ! -L "$HOME/.local/bin/$b" ] || fail "$b link left"; done
 [ ! -L "$HOME/.claude/skills/dsh-harness" ] || fail "skill link left"
 for p in web acp headless; do
   ! grep -q "dsh-claude-bridge managed block" "$HOME/.dsh/profiles/$p/cordis.patch.yml" || fail "managed block left in $p"
@@ -79,6 +80,7 @@ if [ "${MCACP:-1}" = 1 ] && command -v claude >/dev/null; then
   [ ! -e "$HOME/.local/share/mcacp" ] || fail "mcacp install left"
 fi
 [ ! -e "$HOME/.config/dsh-claude-bridge/channel-mcp.json" ] || fail "channel config left"
+! grep -q "/claude-turn-event" "$HOME/.claude/settings.json" 2>/dev/null || fail "Stop hook left in settings.json"
 [ -f "$HOME/.config/dsh-claude-bridge/config" ] || fail "config removed without --purge"
 echo "ok - uninstall removed every piece and kept the config"
 

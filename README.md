@@ -6,6 +6,7 @@
 |---|---|
 | Claude Code → dsh | Multi-turn, resumable dsh sessions from Claude Code through [acpx](https://www.npmjs.com/package/acpx) (shell) or [mcacp](https://www.npmjs.com/package/mcacp) (MCP tools), plus headless one-shots |
 | dsh → a running Claude Code session | dsh gets a `send_to_claude` tool; the message arrives at once in a Claude session started with `claude-dsh`, even while it is idle ([Claude Code channels](https://code.claude.com/docs/en/channels), research preview) |
+| Claude Code → dsh: "done" | A Stop hook (added to `~/.claude/settings.json` by `setup`) writes one JSON line per finished Claude turn, with its final reply; `dsh-wait-turn --claude` blocks on it |
 | dsh → Claude Code: "done" | A dsh plugin writes one JSON line per finished turn; `dsh-wait-turn` blocks on it without polling, a Claude Code Monitor wakes on it, `dsh-turns` reads the answer |
 | dsh → Claude Code: "do this" | Two Claude Code helpers inside dsh: `subagent_claude_code` on your dsh provider, `subagent_claude_code_claude` on Claude with your Claude Code login |
 | Claude Code knows how | The `dsh-harness` skill: checks the setup first, then picks the right surface |
@@ -17,7 +18,7 @@
 Requires macOS or Linux, Node ≥ 24.9, Python 3, `zstd`, and [dsh 0.2.x](https://www.npmjs.com/package/@deepseek-ai/dsh) (`npm install -g @deepseek-ai/dsh`). Claude Code is optional (needed for the skill to be useful and for mcacp).
 
 ```bash
-dsh plugin --profile web add github:ahmedibrahim085/dsh-claude-bridge#v0.3.0
+dsh plugin --profile web add github:ahmedibrahim085/dsh-claude-bridge#v0.4.0
 ~/.dsh/profiles/web/node_modules/dsh-claude-bridge/bin/dsh-claude-bridge setup
 ```
 
@@ -49,7 +50,7 @@ BIN_DIR=~/.local/bin
 Run the two install commands with the new tag. The new `setup` moves your other profiles to the same release and keeps your config:
 
 ```bash
-dsh plugin --profile web add github:ahmedibrahim085/dsh-claude-bridge#v0.3.0
+dsh plugin --profile web add github:ahmedibrahim085/dsh-claude-bridge#v0.4.0
 ~/.dsh/profiles/web/node_modules/dsh-claude-bridge/bin/dsh-claude-bridge setup
 ```
 
@@ -62,7 +63,7 @@ dsh-claude-bridge uninstall --dry-run    # list what would be removed; changes n
 dsh-claude-bridge uninstall              # remove it; add --purge to delete your config and turn events too
 ```
 
-`uninstall` removes only what `setup` made: the plugin and the managed block in each profile, the links and the skill, the channel config, the acpx `dsh` agent, and mcacp's `dsh` agent (plus mcacp itself when no other agent uses it). Your own profile entries, dsh, pnpm and acpx stay. Restart any running dsh host afterwards.
+`uninstall` removes only what `setup` made: the plugin and the managed block in each profile, the links and the skill, the channel config, the Stop hook in `~/.claude/settings.json`, the acpx `dsh` agent, and mcacp's `dsh` agent (plus mcacp itself when no other agent uses it). Your own profile entries, dsh, pnpm and acpx stay. Restart any running dsh host afterwards.
 
 ### What `setup` does
 
@@ -90,6 +91,14 @@ dsh-turns --since 1h                            # what dsh answered
 ```
 
 For several dsh sessions at once, use the mcacp MCP tools from Claude Code: all sessions share one dsh process. The `dsh-harness` skill does this on its own for three or more sessions.
+
+Wait for Claude the same way, e.g. from dsh's shell or a script:
+
+```bash
+dsh-wait-turn --claude --cwd "$PWD" --timeout 3600   # returns when a Claude Code turn in this folder ends
+```
+
+Claude's event line (`~/.local/state/claude-events/turns.jsonl`) carries `session_id`, `cwd`, `transcript_path` and the final reply (`last_assistant_message`, first 8000 characters). `setup` adds the hook to `~/.claude/settings.json` after a backup and leaves your other hooks as they are; set `CLAUDE_DONE=0` to skip it.
 
 To let dsh message you while you work, start Claude Code with `claude-dsh` instead of `claude` (same arguments). Claude Code shows a one-time warning that lists `server:dsh-channel`; choose "I am using this for local development". dsh can then call `send_to_claude` ("tell Claude the tests pass"), optionally with `cwd` to reach only the session working in that folder. Only sessions started this way load the channel server (about 37 MB each), so your other sessions start nothing.
 

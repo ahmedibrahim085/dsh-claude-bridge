@@ -1,0 +1,37 @@
+#!/usr/bin/env python3
+"""claude-turn-event: Claude Code Stop hook that records "Claude finished a turn".
+
+Appends one JSON line per finished turn to ~/.local/state/claude-events/turns.jsonl
+(CLAUDE_TURN_EVENTS_FILE overrides), the same shape dsh's turn events use, so
+`dsh-wait-turn --claude` (or any reader) can wait on it:
+
+  {"ts", "event": "stop", "session_id", "cwd", "transcript_path", "last_assistant_message", "truncated"}
+
+It prints nothing (a Stop hook's stdout can be read as a decision) and always exits 0,
+so a full disk or a bad payload never blocks a Claude Code turn.
+"""
+import json, os, sys, time
+from pathlib import Path
+
+MAX_TEXT = 8000  # characters of the final reply kept per event
+
+
+def main():
+    try:
+        d = json.loads(sys.stdin.read(4_000_000))
+        text = d.get("last_assistant_message") or ""
+        ev = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "event": "stop",
+              "session_id": d.get("session_id"), "cwd": d.get("cwd"), "transcript_path": d.get("transcript_path"),
+              "last_assistant_message": text[:MAX_TEXT], "truncated": len(text) > MAX_TEXT}
+        path = Path(os.environ.get("CLAUDE_TURN_EVENTS_FILE", Path.home() / ".local/state/claude-events/turns.jsonl"))
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(ev, ensure_ascii=False) + "\n")
+    except Exception as e:  # never fail the turn
+        print(f"claude-turn-event: {e}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()
+    sys.exit(0)

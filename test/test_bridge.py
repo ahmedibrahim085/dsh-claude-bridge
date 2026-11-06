@@ -226,6 +226,15 @@ class UninstallTests(unittest.TestCase):
         server = bridge.channel_mcp(self.c)["mcpServers"]["dsh-channel"]
         self.assertEqual(server, {"command": str(self.home / "bin/dsh-claude-channel"), "args": ["--role", "claude"]})
 
+    def test_removes_our_stop_hook_and_keeps_the_rest(self):
+        import json
+        sp = self.home / ".claude/settings.json"
+        other = {"hooks": [{"type": "command", "command": "bash other.sh"}]}
+        sp.write_text(json.dumps({"model": "m", "hooks": {"Stop": [other, bridge.stop_hook_entry(self.c)]}}, indent=2) + "\n")
+        self.assertEqual(bridge.uninstall(self.c, dry_run=False, purge=False), 0)
+        self.assertEqual(json.loads(sp.read_text()), {"model": "m", "hooks": {"Stop": [other]}})
+        self.assertTrue(list((self.home / ".local/state/dsh-claude-bridge/backups").glob("settings.json.*")))
+
     def test_purge_also_removes_config_and_events(self):
         bridge.uninstall(self.c, dry_run=False, purge=True)
         self.assertFalse(bridge.CONFIG.exists())
@@ -247,6 +256,78 @@ class UninstallTests(unittest.TestCase):
             (self.home / ".dsh/profiles" / p / "package.json").write_text('{"dependencies": {"other": "1"}}')
         self.assertEqual(bridge.uninstall(self.c, dry_run=False, purge=False), 0)
         self.assertEqual(self.calls, [])
+
+
+class ClaudeDoneHookTests(unittest.TestCase):
+    """The Stop hook that writes Claude's "done" events, and how setup/uninstall edit settings.json."""
+
+    def test_merge_adds_once_and_keeps_other_stop_hooks(self):
+        entry = bridge.stop_hook_entry(cfg(BIN_DIR="/b"))
+        self.assertEqual(entry, {"hooks": [{"type": "command", "command": "/b/claude-turn-event", "timeout": 5}]})
+        mine = {"matcher": "*", "hooks": [{"type": "command", "command": "bash other.sh"}]}
+        s = {"model": "x", "hooks": {"Stop": [mine], "PreToolUse": [mine]}}
+        s2, changed = bridge.merge_stop_hook(s, entry)
+        self.assertTrue(changed)
+        self.assertEqual(s2["hooks"]["Stop"], [mine, entry])
+        self.assertEqual(s2["hooks"]["PreToolUse"], [mine])
+        self.assertEqual(s2["model"], "x")
+        s3, changed = bridge.merge_stop_hook(s2, entry)
+        self.assertFalse(changed)
+        self.assertEqual(s3, s2)
+
+    def test_merge_replaces_an_entry_with_an_old_path(self):
+        old = {"hooks": [{"type": "command", "command": "/old/bin/claude-turn-event", "timeout": 5}]}
+        new = bridge.stop_hook_entry(cfg(BIN_DIR="/b"))
+        s, changed = bridge.merge_stop_hook({"hooks": {"Stop": [old]}}, new)
+        self.assertTrue(changed)
+        self.assertEqual(s["hooks"]["Stop"], [new])
+
+    def test_merge_into_settings_without_hooks(self):
+        s, changed = bridge.merge_stop_hook({}, bridge.stop_hook_entry(cfg(BIN_DIR="/b")))
+        self.assertTrue(changed)
+        self.assertEqual(len(s["hooks"]["Stop"]), 1)
+
+    def test_drop_removes_only_ours(self):
+        mine = {"matcher": "*", "hooks": [{"type": "command", "command": "bash other.sh"}]}
+        ours = bridge.stop_hook_entry(cfg(BIN_DIR="/b"))
+        s, changed = bridge.drop_stop_hook({"hooks": {"Stop": [mine, ours]}})
+        self.assertTrue(changed)
+        self.assertEqual(s["hooks"]["Stop"], [mine])
+        s, changed = bridge.drop_stop_hook({"hooks": {"Stop": [ours]}, "x": 1})
+        self.assertEqual(s, {"hooks": {}, "x": 1})
+        self.assertFalse(bridge.drop_stop_hook({"hooks": {"Stop": [mine]}})[1])
+
+    def run_hook(self, stdin, env_file):
+        import subprocess, sys
+        env = {**os.environ, "CLAUDE_TURN_EVENTS_FILE": str(env_file)}
+        return subprocess.run([sys.executable, str(BIN.parent / "claude-turn-event")], input=stdin,
+                              capture_output=True, text=True, env=env, timeout=30)
+
+    def test_hook_appends_one_private_line_per_stop(self):
+        import json, stat
+        ev = Path(tempfile.mkdtemp()) / "state" / "turns.jsonl"
+        payload = {"session_id": "s-1", "cwd": "/w", "transcript_path": "/t.jsonl", "hook_event_name": "Stop",
+                   "last_assistant_message": "done: " + "x" * 9000}
+        r = self.run_hook(json.dumps(payload), ev)
+        self.assertEqual((r.returncode, r.stdout), (0, ""))  # a Stop hook's stdout could be read as a decision
+        r = self.run_hook(json.dumps({**payload, "last_assistant_message": "second"}), ev)
+        lines = [json.loads(l) for l in ev.read_text().splitlines()]
+        self.assertEqual(len(lines), 2)
+        self.assertEqual({k: lines[0][k] for k in ("event", "session_id", "cwd")}, {"event": "stop", "session_id": "s-1", "cwd": "/w"})
+        self.assertEqual(len(lines[0]["last_assistant_message"]), 8000)
+        self.assertTrue(lines[0]["truncated"])
+        self.assertEqual(lines[1]["last_assistant_message"], "second")
+        self.assertEqual(stat.S_IMODE(ev.stat().st_mode), 0o600)
+
+    def test_hook_never_fails_a_turn(self):
+        ev = Path(tempfile.mkdtemp()) / "turns.jsonl"
+        r = self.run_hook("not json", ev)
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+        self.assertFalse(ev.exists())
+        blocked = Path(tempfile.mkdtemp()) / "file"
+        blocked.write_text("x")
+        r = self.run_hook('{"session_id": "s"}', blocked / "sub" / "turns.jsonl")  # parent is a file: write fails
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
 
 
 class CliTests(unittest.TestCase):

@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""dsh-wait-turn: block until the next dsh turn finishes, print its event line, exit.
+"""dsh-wait-turn: block until the next dsh turn (or, with --claude, Claude Code turn) finishes, print its event line, exit.
 
 Event-driven on macOS/BSD: sleeps on a kernel kqueue watch of the event file (no polling), so a
 waiting `claude -p` run, script or CI step costs no CPU; elsewhere it checks the file size once a
 second. Lines come from the dsh-claude-bridge plugin (DSH_TURN_EVENTS_FILE overrides the path):
   {"ts","event":"turn-stopping","session_id","cwd","turn","agent_preset"}
+With --claude it reads Claude Code's done events instead, written by the bridge's Stop hook
+(CLAUDE_TURN_EVENTS_FILE overrides ~/.local/state/claude-events/turns.jsonl):
+  {"ts","event":"stop","session_id","cwd","transcript_path","last_assistant_message","truncated"}
 
 Usage:
-  dsh-wait-turn [--session ID] [--cwd PATH] [--timeout SECONDS]
+  dsh-wait-turn [--claude] [--session ID] [--cwd PATH] [--timeout SECONDS]
+    --claude   wait for a Claude Code turn instead of a dsh turn
     --session  match a dsh session id (any part of it, e.g. the short id d06e3c3a)
     --cwd      match the session's working directory (use this with acpx: its ids differ from dsh's)
     --timeout  give up after SECONDS (default 1800); exit 2 on timeout, 0 when a turn matched
@@ -15,7 +19,10 @@ Usage:
 import argparse, json, os, select, sys, time
 from pathlib import Path
 
-EVENTS = Path(os.environ.get("DSH_TURN_EVENTS_FILE", Path.home() / ".local/state/dsh-events/turns.jsonl"))
+def events_file(claude):
+    if claude:
+        return Path(os.environ.get("CLAUDE_TURN_EVENTS_FILE", Path.home() / ".local/state/claude-events/turns.jsonl"))
+    return Path(os.environ.get("DSH_TURN_EVENTS_FILE", Path.home() / ".local/state/dsh-events/turns.jsonl"))
 
 
 def matches(ev, a):
@@ -29,10 +36,12 @@ def matches(ev, a):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--claude", action="store_true")
     ap.add_argument("--session")
     ap.add_argument("--cwd")
     ap.add_argument("--timeout", type=float, default=1800)
     a = ap.parse_args()
+    EVENTS = events_file(a.claude)
     EVENTS.parent.mkdir(parents=True, exist_ok=True)
     EVENTS.touch(exist_ok=True)
     deadline = time.monotonic() + a.timeout

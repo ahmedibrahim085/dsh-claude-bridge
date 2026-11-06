@@ -24,7 +24,7 @@ BEGIN = "# >>> dsh-claude-bridge managed block: edit the bridge config, then run
 END = "# <<< dsh-claude-bridge managed block <<<"
 MANAGED_IDS = ["llm-pi-ai", "agent-default-model", "acp", "subagent-claude-code",
                "subagent-claude-code-claude", "tool-subagent-claude-code-claude", "dsh-claude-channel"]
-BINS = ("dsh-claude-bridge", "dsh-wait-turn", "dsh-turns", "dsh-claude-channel", "claude-dsh")
+BINS = ("dsh-claude-bridge", "dsh-wait-turn", "dsh-turns", "dsh-claude-channel", "claude-dsh", "claude-turn-event")
 ACPX_VERSION = "0.21.1"   # tested with dsh 0.2.2-rc.1 on 2026-11-06
 MCACP_VERSION = "0.1.3"   # upstream pins an old zod; installed with a zod>=4.6.6 override
 MIN_NODE = (24, 9)        # dsh 0.2.x engines.node
@@ -51,6 +51,9 @@ MCACP=1
 # dsh -> running Claude Code session: give dsh the send_to_claude tool and install `claude-dsh`, which
 # starts Claude Code able to receive those messages (Claude Code channels, research preview): 1 or 0.
 CHANNEL=1
+# Claude "done" signal: add a Stop hook to ~/.claude/settings.json that writes one line per finished
+# Claude turn to ~/.local/state/claude-events/turns.jsonl (dsh-wait-turn --claude waits on it): 1 or 0.
+CLAUDE_DONE=1
 # Extra environment variables passed through to dsh (space-separated names), e.g. a Codex proxy key.
 PASS_ENV=
 BIN_DIR=~/.local/bin
@@ -79,7 +82,7 @@ def load_config():
     c = read_kv(CONFIG)
     defaults = {"PROVIDER_API": "anthropic-messages", "PROVIDER_KEY_VAR": "ANTHROPIC_AUTH_TOKEN",
                 "PROFILES": "web acp headless", "HELPERS": "both", "HELPER_PERMISSION_MODE": "auto",
-                "MCACP": "1", "CHANNEL": "1", "PASS_ENV": "", "BIN_DIR": "~/.local/bin"}
+                "MCACP": "1", "CHANNEL": "1", "CLAUDE_DONE": "1", "PASS_ENV": "", "BIN_DIR": "~/.local/bin"}
     for k, v in defaults.items():
         c.setdefault(k, v) if c.get(k) else c.__setitem__(k, v)
     c["MODELS_LIST"] = c.get("MODELS", "").split()
@@ -350,6 +353,11 @@ def check(c, live=False):
              else r.miss("mcacp MCP server in Claude Code", "dsh-claude-bridge setup"))
         else:
             r.warn("claude CLI not found: mcacp skipped", "install Claude Code or set MCACP=0")
+    if c.get("CLAUDE_DONE", "1") == "1":
+        sp = claude_settings_file()
+        stops = json.loads(sp.read_text(encoding="utf-8")).get("hooks", {}).get("Stop", []) if sp.exists() else []
+        (r.ok("Claude done signal: Stop hook in ~/.claude/settings.json") if stop_hook_entry(c) in stops
+         else r.miss("Claude done signal: Stop hook in ~/.claude/settings.json", "dsh-claude-bridge setup"))
     if c.get("CHANNEL", "1") == "1":
         cm = channel_mcp_file()
         (r.ok(f"channel config {cm} (start Claude Code with `claude-dsh` to receive from dsh)")
@@ -510,6 +518,14 @@ def setup(c, source):
             cm.parent.mkdir(parents=True, exist_ok=True)
             cm.write_text(json.dumps(channel_mcp(c), indent=2) + "\n")
             step(f"channel config written: {cm} (start Claude Code with `claude-dsh` to receive from dsh)")
+    if c.get("CLAUDE_DONE", "1") == "1":
+        sp = claude_settings_file()
+        cur = json.loads(sp.read_text(encoding="utf-8")) if sp.exists() else {}
+        new, changed = merge_stop_hook(cur, stop_hook_entry(c))
+        if changed:
+            sp.parent.mkdir(parents=True, exist_ok=True)
+            write_settings(sp, new)
+            step(f"Claude done signal: Stop hook added to {sp} (backup in ~/.local/state/dsh-claude-bridge/backups)")
     if failed:
         print(f"setup finished with {len(failed)} failed step(s); fix them and re-run setup")
         return 1
@@ -524,6 +540,49 @@ def channel_mcp_file():
 
 def channel_mcp(c):
     return {"mcpServers": {"dsh-channel": {"command": str(c["BIN_DIR_PATH"] / "dsh-claude-channel"), "args": ["--role", "claude"]}}}
+
+
+def claude_settings_file():
+    return HOME / ".claude/settings.json"
+
+
+def stop_hook_entry(c):
+    return {"hooks": [{"type": "command", "command": str(c["BIN_DIR_PATH"] / "claude-turn-event"), "timeout": 5}]}
+
+
+def _ours(entry):
+    return any(str(h.get("command", "")).endswith("/claude-turn-event") for h in entry.get("hooks", []))
+
+
+def merge_stop_hook(settings, entry):
+    """Return (settings with exactly one Stop entry of ours, changed). Other hooks keep their order."""
+    stops = settings.get("hooks", {}).get("Stop", [])
+    new = [e for e in stops if not _ours(e)] + [entry]
+    if new == stops:
+        return settings, False
+    return {**settings, "hooks": {**settings.get("hooks", {}), "Stop": new}}, True
+
+
+def drop_stop_hook(settings):
+    stops = settings.get("hooks", {}).get("Stop", [])
+    kept = [e for e in stops if not _ours(e)]
+    if kept == stops:
+        return settings, False
+    hooks = {k: v for k, v in settings["hooks"].items() if k != "Stop"}
+    if kept:
+        hooks["Stop"] = kept
+    return {**settings, "hooks": hooks}, True
+
+
+def write_settings(path, data):
+    """Back up, then write as Claude Code does (2-space JSON). A load/save of an unedited file is byte-identical."""
+    backups = HOME / ".local/state/dsh-claude-bridge/backups"
+    backups.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        shutil.copy2(path, backups / f"settings.json.{time.strftime('%Y%m%d-%H%M%S')}")
+    tmp = path.with_name(path.name + ".dsh-claude-bridge.tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def bridge_owned(link):
@@ -576,6 +635,11 @@ def uninstall(c, dry_run=False, purge=False):
             do(f"delete {mdir} (installed by setup)", lambda: shutil.rmtree(mdir))
         do(f"delete {mjson}", mjson.unlink)
 
+    sp = claude_settings_file()
+    if sp.exists():
+        new, changed = drop_stop_hook(json.loads(sp.read_text(encoding="utf-8")))
+        if changed:
+            do(f"remove the Claude done Stop hook from {sp}", lambda: write_settings(sp, new))
     cm = channel_mcp_file()
     if cm.exists() and "dsh-claude-channel" in cm.read_text():
         do(f"delete {cm}", cm.unlink)

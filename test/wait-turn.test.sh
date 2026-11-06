@@ -35,3 +35,14 @@ printf '{"session_id":"session-d06e3c3a-5af2-417c-a283-bd7534bf1608","turn":7}\n
 wait "$pid" || fail "short id inside session-<uuid> did not match"
 grep -q '"turn": 7' "$tmp/out2" || fail "wrong event for short id: $(cat "$tmp/out2")"
 echo "ok - matches a short id inside session-<uuid>"
+
+# --claude waits on Claude Code's done events (Stop hook file), not on dsh's.
+export CLAUDE_TURN_EVENTS_FILE="$tmp/claude.jsonl"
+"$here/bin/dsh-wait-turn" --claude --cwd /work --timeout 10 > "$tmp/out3" &
+pid=$!
+sleep 1
+printf '{"event":"turn-stopping","session_id":"dsh-1","cwd":"/work"}\n' >> "$DSH_TURN_EVENTS_FILE"
+printf '{"event":"stop","session_id":"c-1","cwd":"/work","last_assistant_message":"done"}\n' >> "$CLAUDE_TURN_EVENTS_FILE"
+wait "$pid" || fail "--claude did not match a Claude stop event"
+grep -q '"session_id": "c-1"' "$tmp/out3" || fail "--claude returned the wrong event: $(cat "$tmp/out3")"
+echo "ok - --claude waits on Claude's events, not dsh's"

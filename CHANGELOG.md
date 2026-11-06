@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-06
+
+### Added
+
+- Claude "done" signal: `claude-turn-event`, a Stop hook that writes one JSON line per finished Claude Code turn (with its final reply, first 8000 characters) to `~/.local/state/claude-events/turns.jsonl`. It prints nothing and always exits 0, so it never blocks a turn.
+- `setup` adds the hook to `~/.claude/settings.json` (backup first; other hooks keep their order; `CLAUDE_DONE=0` skips it); `doctor` checks it; `uninstall` removes only this entry.
+- `dsh-wait-turn --claude` waits on Claude's events (`CLAUDE_TURN_EVENTS_FILE` overrides the path).
+- Tests: hook script, settings merge and removal, `--claude` wait; `clean-install.sh` checks the hook is added and removed.
+
 ## [0.3.0] - 2026-11-06
 
 ### Added
@@ -97,7 +106,8 @@ First release, as `dsh-turn-events`.
 
 Known limit: the plugin listens to dsh's internal `agent/turn-stopping` event, which is not a documented public API.
 
-[Unreleased]: https://github.com/ahmedibrahim085/dsh-claude-bridge/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/dsh-claude-bridge/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/ahmedibrahim085/dsh-claude-bridge/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ahmedibrahim085/dsh-claude-bridge/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/ahmedibrahim085/dsh-claude-bridge/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/ahmedibrahim085/dsh-claude-bridge/compare/v0.2.2...v0.2.3
