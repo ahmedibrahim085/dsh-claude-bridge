@@ -309,6 +309,11 @@ def check(c, live=False):
         dump = dump_config(c, node, dsh_bin, p)
         (r.ok(f"profile {p}: plugin loaded") if re.search(r"^- id: dsh-claude-bridge$", dump, re.M)
          else r.miss(f"profile {p}: plugin dsh-claude-bridge not loaded", "dsh-claude-bridge setup"))
+        ppkg = DSH_HOME / "profiles" / p / "package.json"
+        pinned = json.loads(ppkg.read_text()).get("dependencies", {}).get("dsh-claude-bridge", "") if ppkg.exists() else ""
+        want = "v" + json.loads((PKG / "package.json").read_text())["version"]
+        if pinned.startswith("github:") and not pinned.endswith("#" + want):
+            r.warn(f"profile {p}: plugin pinned to {pinned}, this bridge is {want}", "dsh-claude-bridge setup (upgrades it)")
         if (DSH_HOME / "profiles" / p / "node_modules/@deepseek-ai/dsh-app-boot").exists():
             r.miss(f"profile {p}: second dsh copy in node_modules (settings saves fail)", "dsh-claude-bridge setup")
     if "web" in c["PROFILES_LIST"] and c["HELPERS"] != "none":
@@ -339,6 +344,44 @@ def check(c, live=False):
     return r
 
 
+def place_link(link, target, backup_dir):
+    """Point `link` at `target`. A symlink is simply replaced (a stale link holds nothing);
+    a real file or directory is moved to backup_dir, never left beside the link."""
+    link, target = Path(link), Path(target)
+    if link.is_symlink():
+        if os.path.realpath(link) == os.path.realpath(target):
+            return None
+        link.unlink()
+        link.symlink_to(target)
+        return "relinked"
+    if link.exists():
+        backup_dir = Path(backup_dir)
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        dest = backup_dir / f"{link.name}.before-bridge-{int(time.time())}"
+        link.rename(dest)
+        link.symlink_to(target)
+        return f"backed up to {dest}"
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(target)
+    return "linked"
+
+
+def remove_sessions(session_ids, root=None):
+    """Delete the named dsh session dirs (and workspace dirs left empty). Returns the ids removed."""
+    root = Path(root or DSH_HOME / "sessions")
+    removed = []
+    for sid in session_ids:
+        if not sid or not re.fullmatch(r"[A-Za-z0-9._-]+", sid) or sid in (".", ".."):
+            continue
+        for d in root.glob(f"*/{sid}"):
+            if d.is_dir() and d.parent.parent == root:
+                shutil.rmtree(d, ignore_errors=True)
+                removed.append(sid)
+                if not any(d.parent.iterdir()):
+                    d.parent.rmdir()
+    return removed
+
+
 def live_check(c, r):
     d = Path(tempfile.mkdtemp(prefix="dsh-bridge-live-"))
     before = EVENTS.read_text().count("\n") if EVENTS.exists() else 0
@@ -349,8 +392,10 @@ def live_check(c, r):
     time.sleep(1)
     lines = EVENTS.read_text().splitlines()[before:] if EVENTS.exists() else []
     real = os.path.realpath(d)
-    (r.ok("live: turn event written") if any(os.path.realpath(json.loads(l).get("cwd") or "") == real for l in lines if l.strip())
+    mine = [e for e in (json.loads(l) for l in lines if l.strip()) if os.path.realpath(e.get("cwd") or "") == real]
+    (r.ok("live: turn event written") if mine
      else r.miss("live: no turn event for that turn", f"check the plugin is loaded in the acp profile; events file {EVENTS}"))
+    remove_sessions([e.get("session_id") for e in mine])  # the probe session is not the user's work
     shutil.rmtree(d, ignore_errors=True)
 
 
@@ -383,25 +428,14 @@ def setup(c, source):
     bin_dir = c["BIN_DIR_PATH"]
     bin_dir.mkdir(parents=True, exist_ok=True)
     for b in ("dsh-claude-bridge", "dsh-wait-turn", "dsh-turns"):
-        link = bin_dir / b
-        if link.is_symlink() or link.exists():
-            if link.resolve() == (PKG / "bin" / b).resolve():
-                continue
-            link.rename(link.with_name(f"{b}.before-bridge-{int(time.time())}"))
-        link.symlink_to(PKG / "bin" / b)
-        step(f"linked {link}")
+        done = place_link(bin_dir / b, PKG / "bin" / b, HOME / ".local/state/dsh-claude-bridge/backups")
+        if done:
+            step(f"{bin_dir / b}: {done}")
 
-    skills = HOME / ".claude/skills"
-    target = skills / "dsh-harness"
-    if not (target.is_symlink() and target.resolve() == (PKG / "skills/dsh-harness").resolve()):
-        skills.mkdir(parents=True, exist_ok=True)
-        if target.exists() or target.is_symlink():
-            backup = HOME / ".claude/skills-backup" / f"dsh-harness.before-bridge-{int(time.time())}"
-            backup.parent.mkdir(parents=True, exist_ok=True)  # outside skills/, or Claude Code loads it twice
-            target.rename(backup)
-            step(f"previous skill moved to {backup}")
-        target.symlink_to(PKG / "skills/dsh-harness")
-        step(f"linked skill {target}")
+    # Backups go outside skills/, or Claude Code would load the old copy as a second skill.
+    done = place_link(HOME / ".claude/skills/dsh-harness", PKG / "skills/dsh-harness", HOME / ".claude/skills-backup")
+    if done:
+        step(f"skill dsh-harness: {done}")
 
     ver_rc, dsh_ver = sh([node, str(dsh_bin), "--version"], timeout=60)
     for p in c["PROFILES_LIST"]:
@@ -424,9 +458,13 @@ def setup(c, source):
         if "dsh-turn-events" in deps:
             sh(dsh_cmd(c, node, dsh_bin, "plugin", "--profile", p, "remove", "dsh-turn-events"), env=env)
             step(f"profile {p}: removed old dsh-turn-events (renamed to dsh-claude-bridge)")
-        if not re.search(r"^- id: dsh-claude-bridge$", dump_config(c, node, dsh_bin, p), re.M):
+        deps = json.loads((pdir / "package.json").read_text()).get("dependencies", {}) if (pdir / "package.json").exists() else {}
+        pinned = deps.get("dsh-claude-bridge")
+        loaded = re.search(r"^- id: dsh-claude-bridge$", dump_config(c, node, dsh_bin, p), re.M)
+        if not loaded or (pinned and pinned != source and not source.startswith("file:")):
             rc, out = sh(dsh_cmd(c, node, dsh_bin, "plugin", "--profile", p, "add", source), env=env)
-            step(f"profile {p}: plugin {source} {'added' if rc == 0 else 'FAILED: ' + out[-300:]}")
+            verb = "upgraded from " + pinned + " to" if loaded and pinned else "added"
+            step(f"profile {p}: plugin {verb} {source}" if rc == 0 else f"profile {p}: plugin {source} FAILED: {out[-300:]}")
         if (pdir / "node_modules/@deepseek-ai/dsh-app-boot").exists():
             fix_single_dsh(pdir, dsh_bin, env, node, c)
             step(f"profile {p}: linked @deepseek-ai/dsh to the global install (one dsh copy)")

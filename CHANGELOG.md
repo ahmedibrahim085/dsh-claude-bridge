@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.2 — 2026-11-06
+
+- `setup` replaces old symlinks in place (no backup clutter) and moves only real files or folders to a backup dir outside the link dir (`~/.local/state/dsh-claude-bridge/backups`, `~/.claude/skills-backup`).
+- `setup` upgrades a profile whose plugin is pinned to an older release; `doctor` warns about an old pin.
+- `doctor --live` deletes the dsh session its test turn created.
+- `npm test` runs on Node 26 (`node --test test/` stopped accepting a directory).
+- Docs: measured parallel limits for both directions (README Limits, skill gotchas, MAINTENANCE).
+
 ## 0.2.1 — 2026-11-06
 
 - `setup` moves an existing `~/.claude/skills/dsh-harness` to `~/.claude/skills-backup/` instead of renaming it inside `skills/`, where Claude Code would load both copies.

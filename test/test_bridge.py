@@ -91,6 +91,56 @@ class BlockTests(unittest.TestCase):
         self.assertEqual(bridge.conflicts("- insert:\n    - id: subagent-claude-code-claude\n"), ["subagent-claude-code-claude"])
 
 
+class LinkTests(unittest.TestCase):
+    def setUp(self):
+        self.d = Path(tempfile.mkdtemp())
+        self.target = self.d / "new-target"; self.target.write_text("new")
+        self.backups = self.d / "backups"
+
+    def test_old_symlink_is_replaced_without_a_backup(self):
+        old = self.d / "old-target"; old.write_text("old")
+        link = self.d / "bin" / "tool"; link.parent.mkdir(); link.symlink_to(old)
+        self.assertEqual(bridge.place_link(link, self.target, self.backups), "relinked")
+        self.assertEqual(os.path.realpath(link), os.path.realpath(self.target))
+        self.assertEqual(sorted(p.name for p in link.parent.iterdir()), ["tool"])
+        self.assertFalse(self.backups.exists())
+
+    def test_dangling_symlink_is_replaced(self):
+        link = self.d / "tool"; link.symlink_to(self.d / "gone")
+        self.assertEqual(bridge.place_link(link, self.target, self.backups), "relinked")
+        self.assertTrue(link.exists())
+
+    def test_real_file_is_backed_up_outside_the_link_dir(self):
+        link = self.d / "bin" / "tool"; link.parent.mkdir(); link.write_text("mine")
+        result = bridge.place_link(link, self.target, self.backups)
+        self.assertTrue(result.startswith("backed up to"))
+        self.assertEqual([p.read_text() for p in self.backups.iterdir()], ["mine"])
+        self.assertEqual(sorted(p.name for p in link.parent.iterdir()), ["tool"])
+
+    def test_correct_link_is_left_alone(self):
+        link = self.d / "tool"; link.symlink_to(self.target)
+        self.assertIsNone(bridge.place_link(link, self.target, self.backups))
+
+
+class LiveCleanupTests(unittest.TestCase):
+    def test_removes_only_the_live_sessions_and_empty_workspace_dirs(self):
+        root = Path(tempfile.mkdtemp())
+        (root / "--tmp-dsh-bridge-live-x--" / "sid-live").mkdir(parents=True)
+        (root / "--tmp-dsh-bridge-live-x--" / "sid-live" / "session.v4.jsonl.zstd").write_text("x")
+        (root / "--work--" / "sid-mine").mkdir(parents=True)
+        (root / "--work--" / "sid-other").mkdir(parents=True)
+        removed = bridge.remove_sessions(["sid-live", "sid-mine"], root)
+        self.assertEqual(sorted(removed), ["sid-live", "sid-mine"])
+        self.assertFalse((root / "--tmp-dsh-bridge-live-x--").exists())
+        self.assertTrue((root / "--work--" / "sid-other").exists())
+
+    def test_ignores_unsafe_ids(self):
+        root = Path(tempfile.mkdtemp())
+        (root / "ws" / "keep").mkdir(parents=True)
+        self.assertEqual(bridge.remove_sessions(["", "..", "../ws", "*"], root), [])
+        self.assertTrue((root / "ws" / "keep").exists())
+
+
 class EnvTests(unittest.TestCase):
     def test_clean_env_has_key_under_bridge_name_only(self):
         os.environ["ANTHROPIC_BASE_URL"] = "https://leak.example"

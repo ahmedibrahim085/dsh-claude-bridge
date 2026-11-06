@@ -16,7 +16,7 @@
 Requires macOS or Linux, Node ≥ 24.9, Python 3, `zstd`, and [dsh 0.2.x](https://www.npmjs.com/package/@deepseek-ai/dsh) (`npm install -g @deepseek-ai/dsh`). Claude Code is optional (needed for the skill to be useful and for mcacp).
 
 ```bash
-dsh plugin --profile web add github:ahmedibrahim085/dsh-claude-bridge#v0.2.1
+dsh plugin --profile web add github:ahmedibrahim085/dsh-claude-bridge#v0.2.2
 ~/.dsh/profiles/web/node_modules/dsh-claude-bridge/bin/dsh-claude-bridge setup
 ```
 
@@ -92,6 +92,10 @@ dsh notification plugins (`dsh-notify-tray`, `dsh-notify-plugin`, `dsh-notify-me
 - The provider helper needs an Anthropic-compatible endpoint (`PROVIDER_API=anthropic-messages`).
 - The helper tools are added at host level; agent presets that list their own tool rows need a row for each helper.
 - `dsh-wait-turn` uses kernel file events on macOS/BSD and a 1-second size check elsewhere.
+- Parallel sessions, measured on a 24 GB, 14-core Mac with a GLM provider (2026-11-06):
+  - **Claude Code → dsh** (acpx): each session is its own dsh process, about 320 MB. 16 at once all answered (18 s, 5.2 GB). No limit in code; RAM and your provider's rate limit set it.
+  - **dsh → Claude Code** (helpers): at most **8 active helpers per root dsh session**; the 9th call is refused with `subagent limit reached (active child limit: 8)`. 8 at once all answered. The cap is dsh's `maxActiveSubagents` (dsh-subagent config). Separate dsh sessions each have their own 8.
+  - mcacp (many sessions in one MCP server) was not measured.
 - Tested on macOS with dsh 0.2.2-rc.1, Claude Code 2.1.319, Node 26.
 
 ## Development

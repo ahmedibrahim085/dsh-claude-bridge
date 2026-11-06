@@ -95,4 +95,5 @@ The child runs **in the background**: the turn that starts it ends with "started
 
 - Start dsh only through `dsh-claude-bridge run` (or a launcher that calls it). A dsh started from a shell holding provider `ANTHROPIC_*` variables passes them to every Claude Code helper, so the Claude helper silently uses the provider.
 - Helper failures show in dsh only as `stage: query-run; category: invalid-result`. Provider helper `401`: a claude.ai login outranked the provider key (the bridge gives it its own config dir). Claude helper `OAuth session expired`: something set `CLAUDE_CONFIG_DIR`.
+- Parallel work: each acpx session is its own dsh process (about 320 MB); 16 at once were tested. One dsh session runs at most 8 Claude Code helpers at a time; a 9th is refused with `subagent limit reached`, so queue the rest or wait for one to finish.
 - After a dsh update, or when anything here stops working, read `MAINTENANCE.md` in the bridge package (`~/.dsh/profiles/web/node_modules/dsh-claude-bridge/`): each piece, why an update can break it, and the check.
