@@ -3,7 +3,7 @@
 
 Event-driven on macOS/BSD: sleeps on a kernel kqueue watch of the event file (no polling), so a
 waiting `claude -p` run, script or CI step costs no CPU; elsewhere it checks the file size once a
-second. Lines come from the dsh-turn-events plugin (DSH_TURN_EVENTS_FILE overrides the path):
+second. Lines come from the dsh-claude-bridge plugin (DSH_TURN_EVENTS_FILE overrides the path):
   {"ts","event":"turn-stopping","session_id","cwd","turn","agent_preset"}
 
 Usage:

@@ -23,11 +23,11 @@ const payload = {
 }
 
 test('exports the plugin name the bundle patch mounts', () => {
-  assert.equal(name, 'dsh-turn-events')
+  assert.equal(name, 'dsh-claude-bridge')
 })
 
 test('subscribes to agent/turn-stopping and appends one JSON line per turn', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'dsh-turn-events-'))
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-claude-bridge-'))
   const file = join(dir, 'nested', 'turns.jsonl')
   const ctx = fakeCtx()
   apply(ctx, { file })
@@ -47,7 +47,7 @@ test('subscribes to agent/turn-stopping and appends one JSON line per turn', asy
 })
 
 test('a write failure is logged, never thrown into the dsh turn', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'dsh-turn-events-'))
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-claude-bridge-'))
   const blocker = join(dir, 'not-a-dir')
   await writeFile(blocker, 'x')
   const ctx = fakeCtx()

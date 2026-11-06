@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.0 — 2026-11-06
+
+Renamed from `dsh-turn-events` to **`dsh-claude-bridge`**: one package for everything that connects Claude Code and dsh. The plugin id is now `dsh-claude-bridge`; `setup` removes the old `dsh-turn-events` entry from your profiles.
+
+- **`dsh-claude-bridge doctor [--live]`**: checks Node, dsh, pnpm, zstd, the config, each profile (managed block, plugin loaded, one dsh copy), acpx and its `dsh` agent, the CLIs, the skill and mcacp; `--live` runs one real dsh turn and checks its event.
+- **`dsh-claude-bridge setup`**: installs or repairs everything doctor checks, from one config file (`~/.config/dsh-claude-bridge/config`). Writes a marked block per profile and refuses to override hand-written entries with the same ids. Safe to re-run; exits non-zero when a step fails.
+- **`dsh-claude-bridge run --profile P`**: starts dsh with a clean environment; the provider key reaches dsh only as `BRIDGE_PROVIDER_KEY`. Fixes provider `ANTHROPIC_*` variables leaking into every Claude Code helper.
+- **Claude Code helpers on two brains**: `subagent_claude_code` (your provider; own config dir so a claude.ai login cannot outrank the provider key) and `subagent_claude_code_claude` (Claude, your Claude Code login; no `CLAUDE_CONFIG_DIR`, which breaks the keychain lookup). Default permission mode `auto`.
+- **ACP default model**: the managed block sets the `acp` entry, which ACP sessions use instead of `agent-default-model`.
+- **One dsh copy per profile**: setup links `@deepseek-ai/dsh` to the global install when a plugin pulls a second copy (which breaks settings saves).
+- **mcacp**: installed with `zod >= 4.6.6` (upstream pins a version with 2 high advisories) and registered in Claude Code.
+- **`dsh-harness` skill** shipped in the package (`skills/`), with 4 eval cases; it runs `doctor` first.
+- **MAINTENANCE.md**: what a dsh, Claude Code, acpx or mcacp update can break, how it shows, and the fix.
+- Tests: 5 plugin, 3 wait-CLI, 10 bridge unit tests; `test/clean-install.sh` installs into a throwaway HOME and passes `doctor --live`.
+
 ## 0.1.0 — 2026-11-06
 
 First release.

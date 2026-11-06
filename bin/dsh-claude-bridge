@@ -1,0 +1,501 @@
+#!/usr/bin/env python3
+"""dsh-claude-bridge: set up, check and launch the Claude Code <-> DeepSeek Harness (dsh) bridge.
+
+  dsh-claude-bridge doctor [--live]      check every piece; --live also runs one real dsh turn
+  dsh-claude-bridge setup [--yes]        install or repair what doctor reports missing (safe to re-run)
+  dsh-claude-bridge run --profile P [-- dsh args]
+                                         start dsh with a clean environment and the provider key
+
+Configuration: ~/.config/dsh-claude-bridge/config (or DSH_BRIDGE_CONFIG), KEY=VALUE lines.
+`setup` writes a commented template on first use. Keys are read from PROVIDER_KEY_FILE at run time
+and passed to dsh only as BRIDGE_PROVIDER_KEY; nothing secret is written by this tool.
+"""
+import argparse, json, os, re, shutil, subprocess, sys, tempfile, time
+from pathlib import Path
+
+HOME = Path.home()
+PKG = Path(__file__).resolve().parent.parent
+CONFIG = Path(os.environ.get("DSH_BRIDGE_CONFIG", HOME / ".config/dsh-claude-bridge/config"))
+DSH_HOME = Path(os.environ.get("DSH_HOME", HOME / ".dsh"))
+EVENTS = Path(os.environ.get("DSH_TURN_EVENTS_FILE", HOME / ".local/state/dsh-events/turns.jsonl"))
+BEGIN = "# >>> dsh-claude-bridge managed block: edit the bridge config, then run `dsh-claude-bridge setup` >>>"
+END = "# <<< dsh-claude-bridge managed block <<<"
+MANAGED_IDS = ["llm-pi-ai", "agent-default-model", "acp", "subagent-claude-code",
+               "subagent-claude-code-claude", "tool-subagent-claude-code-claude"]
+ACPX_VERSION = "0.21.1"   # tested with dsh 0.2.2-rc.1 on 2026-11-06
+MCACP_VERSION = "0.1.3"   # upstream pins an old zod; installed with a zod>=4.6.6 override
+MIN_NODE = (24, 9)        # dsh 0.2.x engines.node
+
+TEMPLATE = """\
+# dsh-claude-bridge configuration (KEY=VALUE, no quotes needed). Run `dsh-claude-bridge setup` after editing.
+# The model provider dsh uses (any Anthropic-compatible endpoint works for the Claude Code provider helper).
+PROVIDER_ID=
+PROVIDER_API=anthropic-messages
+PROVIDER_BASE_URL=
+# File holding the API key as KEY=VALUE (an existing env file is fine), and the variable name inside it.
+PROVIDER_KEY_FILE=
+PROVIDER_KEY_VAR=ANTHROPIC_AUTH_TOKEN
+# Space-separated model ids; the first is the default.
+MODELS=
+# dsh profiles to configure (the plugin and the provider go into each).
+PROFILES=web acp headless
+# Claude Code helpers in the web profile: provider (runs on the provider above), claude (runs on Claude
+# with your Claude Code login), both, or none. HELPER_PERMISSION_MODE: auto | acceptEdits | dontAsk | plan.
+HELPERS=both
+HELPER_PERMISSION_MODE=auto
+# Register mcacp (MCP access to dsh) in Claude Code: 1 or 0.
+MCACP=1
+# Extra environment variables passed through to dsh (space-separated names), e.g. a Codex proxy key.
+PASS_ENV=
+BIN_DIR=~/.local/bin
+"""
+
+
+# ---------- configuration ----------
+
+def read_kv(path):
+    """Parse KEY=VALUE / export KEY="VALUE" lines without executing anything."""
+    out = {}
+    for line in Path(path).expanduser().read_text().splitlines():
+        m = re.match(r"\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$", line)
+        if not m or line.lstrip().startswith("#"):
+            continue
+        v = m.group(2).strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+            v = v[1:-1]
+        out[m.group(1)] = v
+    return out
+
+
+def load_config():
+    if not CONFIG.exists():
+        return None
+    c = read_kv(CONFIG)
+    defaults = {"PROVIDER_API": "anthropic-messages", "PROVIDER_KEY_VAR": "ANTHROPIC_AUTH_TOKEN",
+                "PROFILES": "web acp headless", "HELPERS": "both", "HELPER_PERMISSION_MODE": "auto",
+                "MCACP": "1", "PASS_ENV": "", "BIN_DIR": "~/.local/bin"}
+    for k, v in defaults.items():
+        c.setdefault(k, v) if c.get(k) else c.__setitem__(k, v)
+    c["MODELS_LIST"] = c.get("MODELS", "").split()
+    c["PROFILES_LIST"] = c["PROFILES"].split()
+    c["BIN_DIR_PATH"] = Path(c["BIN_DIR"]).expanduser()
+    return c
+
+
+def config_problems(c):
+    missing = [k for k in ("PROVIDER_ID", "PROVIDER_BASE_URL", "PROVIDER_KEY_FILE", "MODELS") if not c.get(k)]
+    probs = [f"{k} is empty" for k in missing]
+    if c.get("PROVIDER_KEY_FILE"):
+        kf = Path(c["PROVIDER_KEY_FILE"]).expanduser()
+        if not kf.is_file():
+            probs.append(f"PROVIDER_KEY_FILE {kf} not found")
+        elif not read_kv(kf).get(c["PROVIDER_KEY_VAR"]):
+            probs.append(f"{c['PROVIDER_KEY_VAR']} not set in {kf}")
+    if c.get("HELPERS") not in ("provider", "claude", "both", "none"):
+        probs.append("HELPERS must be provider, claude, both or none")
+    return probs
+
+
+def provider_key(c):
+    return read_kv(Path(c["PROVIDER_KEY_FILE"]).expanduser()).get(c["PROVIDER_KEY_VAR"], "")
+
+
+# ---------- environment discovery ----------
+
+def node_version(node):
+    try:
+        out = subprocess.run([node, "-v"], capture_output=True, text=True, timeout=10).stdout.strip()
+        return tuple(int(x) for x in out.lstrip("v").split(".")[:2])
+    except Exception:
+        return None
+
+
+def find_node():
+    cands = []
+    for d in os.environ.get("PATH", "").split(os.pathsep) + ["/opt/homebrew/bin", "/usr/local/bin"]:
+        p = Path(d) / "node"
+        if p.is_file() and str(p) not in cands:
+            cands.append(str(p))
+    for p in cands:
+        v = node_version(p)
+        if v and v >= MIN_NODE:
+            return p
+    return None
+
+
+def find_dsh_bin():
+    try:
+        root = subprocess.run(["npm", "root", "-g"], capture_output=True, text=True, timeout=30).stdout.strip()
+        p = Path(root) / "@deepseek-ai/dsh/lib/bin.js"
+        if p.is_file():
+            return p
+    except Exception:
+        pass
+    w = shutil.which("dsh")
+    return Path(w).resolve() if w else None
+
+
+def npm_global_bin():
+    """npm's global bin dir (where dsh, pnpm and acpx live), asked from npm rather than assumed."""
+    try:
+        prefix = subprocess.run(["npm", "prefix", "-g"], capture_output=True, text=True, timeout=30).stdout.strip()
+        return str(Path(prefix) / "bin") if prefix else None
+    except Exception:
+        return None
+
+
+def clean_env(c, node):
+    """The whole environment dsh gets: no caller variables, no ANTHROPIC_* (they would reach every helper)."""
+    path = [str(Path(node).parent), npm_global_bin(), "/opt/homebrew/bin", "/usr/local/bin",
+            "/usr/bin", "/bin", "/usr/sbin", "/sbin", str(c["BIN_DIR_PATH"])]
+    path = [p for p in path if p]
+    env = {k: os.environ[k] for k in ("HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG") if k in os.environ}
+    env["PATH"] = os.pathsep.join(dict.fromkeys(path))
+    env["BRIDGE_PROVIDER_KEY"] = provider_key(c)
+    env["BRIDGE_PROVIDER_BASE_URL"] = c["PROVIDER_BASE_URL"]
+    for name in c["PASS_ENV"].split():
+        if name in os.environ:
+            env[name] = os.environ[name]
+    return env
+
+
+# ---------- profile patch (managed block) ----------
+
+def managed_block(c, profile):
+    m0, pid = c["MODELS_LIST"][0], c["PROVIDER_ID"]
+    models = "".join(f"\n          - id: {m}\n            input: [text, image]" for m in c["MODELS_LIST"])
+    y = [BEGIN,
+         "- id: llm-pi-ai", "  config:", "    providers:", f"      {pid}:",
+         "        apiKeyEnv: BRIDGE_PROVIDER_KEY", f"        api: {c['PROVIDER_API']}",
+         f"        baseURL: {c['PROVIDER_BASE_URL']}", f"        models:{models}",
+         "- id: agent-default-model", "  config:", f"    provider: {pid}", f"    model: {m0}"]
+    if profile == "acp":  # ACP sessions take their route from this entry, not from agent-default-model
+        y += ["- id: acp", "  config:", f"    provider: {pid}", f"    model: {m0}"]
+    if profile == "web" and c["HELPERS"] in ("provider", "both") and c["PROVIDER_API"] == "anthropic-messages":
+        y += ["# Claude Code helper on the provider (tool subagent_claude_code). Its own config dir: in",
+              "# ~/.claude a claude.ai login outranks ANTHROPIC_AUTH_TOKEN and the provider answers 401.",
+              "- id: subagent-claude-code", "  config:", f"    permissionMode: {c['HELPER_PERMISSION_MODE']}",
+              "    env:",
+              "      ANTHROPIC_BASE_URL: !!js process.env.BRIDGE_PROVIDER_BASE_URL ?? ''",
+              "      ANTHROPIC_AUTH_TOKEN: !!js process.env.BRIDGE_PROVIDER_KEY ?? ''",
+              *[f"      {v}: {m0}" for v in ("ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                                           "ANTHROPIC_DEFAULT_HAIKU_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL")],
+              "      CLAUDE_CONFIG_DIR: !!js process.env.HOME + '/.dsh/claude-code-provider'"]
+    if profile == "web" and c["HELPERS"] in ("claude", "both"):
+        y += ["# Claude Code helper on Claude (tool subagent_claude_code_claude), using your Claude Code",
+              "# login. No CLAUDE_CONFIG_DIR: setting it, even to ~/.claude, breaks the keychain lookup.",
+              "- insert:", "    - id: subagent-claude-code-claude", "      name: '@deepseek-ai/dsh-subagent-claude-code'",
+              "      config:", "        providerName: claude-code-claude",
+              f"        permissionMode: {c['HELPER_PERMISSION_MODE']}",
+              "    - id: tool-subagent-claude-code-claude", "      name: '@deepseek-ai/dsh-tool-subagent'",
+              "      config:", "        provider: claude-code-claude", "        toolName: subagent_claude_code_claude",
+              "        maxDepth: provider-managed"]
+    return "\n".join(y + [END]) + "\n"
+
+
+def split_patch(text):
+    """Return (before, block, after) around the managed block; block is None when absent."""
+    if BEGIN in text and END in text:
+        a, rest = text.split(BEGIN, 1)
+        block, b = rest.split(END, 1)
+        return a, BEGIN + block + END, b.lstrip("\n")
+    return text, None, ""
+
+
+def conflicts(text):
+    """Entries the managed block would set that also exist outside it."""
+    outside = "".join(p for p in (split_patch(text)[0], split_patch(text)[2]))
+    # Only top-level entries and top-level `insert` items; rows nested deeper (e.g. inside agent presets)
+    # are separate entries that merely share a name.
+    return [i for i in MANAGED_IDS if re.search(rf"^(?:- |    - )id:\s*{re.escape(i)}\s*$", outside, re.M)]
+
+
+def write_block(patch_file, block):
+    text = patch_file.read_text() if patch_file.exists() else ""
+    before, old, after = split_patch(text)
+    # Shipped profiles hold an empty list (`[]`); list entries after it would be invalid YAML.
+    before = re.sub(r"^\s*\[\]\s*$\n?", "", before, flags=re.M)
+    after = re.sub(r"^\s*\[\]\s*$\n?", "", after, flags=re.M)
+    new = (before.rstrip("\n") + "\n\n" if before.strip() else "") + block + (("\n" + after) if after.strip() else "")
+    if new != text:
+        patch_file.write_text(new)
+        return True
+    return False
+
+
+# ---------- small helpers ----------
+
+def sh(args, timeout=600, env=None, cwd=None):
+    r = subprocess.run(args, capture_output=True, text=True, timeout=timeout, env=env, cwd=cwd)
+    return r.returncode, (r.stdout or "") + (r.stderr or "")
+
+
+def dsh_cmd(c, node, dsh_bin, *args):
+    return [node, str(dsh_bin), *args]
+
+
+def dump_config(c, node, dsh_bin, profile):
+    rc, out = sh(dsh_cmd(c, node, dsh_bin, "--profile", profile, "--dump-config"), timeout=120, env=clean_env(c, node))
+    return out if rc == 0 else ""
+
+
+def json_merge(path, update):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = json.loads(path.read_text()) if path.exists() else {}
+    def merge(a, b):
+        for k, v in b.items():
+            a[k] = merge(a.get(k, {}), v) if isinstance(v, dict) and isinstance(a.get(k), dict) else v
+        return a
+    new = merge(data, update)
+    if json.dumps(new, sort_keys=True) != json.dumps(json.loads(path.read_text()) if path.exists() else {}, sort_keys=True):
+        path.write_text(json.dumps(new, indent=2) + "\n")
+        return True
+    return False
+
+
+def bridge_cmd(c):
+    return str(c["BIN_DIR_PATH"] / "dsh-claude-bridge")
+
+
+# ---------- checks ----------
+
+class Report:
+    def __init__(self):
+        self.missing = 0
+    def ok(self, what):
+        print(f"[ok]      {what}")
+    def warn(self, what, fix=""):
+        print(f"[warn]    {what}" + (f"\n          fix: {fix}" if fix else ""))
+    def miss(self, what, fix):
+        self.missing += 1
+        print(f"[missing] {what}\n          fix: {fix}")
+
+
+def check(c, live=False):
+    r = Report()
+    if c is None:
+        r.miss(f"config {CONFIG}", "run `dsh-claude-bridge setup` to write a template, then fill it in")
+        return r
+    probs = config_problems(c)
+    for p in probs:
+        r.miss(f"config: {p}", f"edit {CONFIG}")
+    if probs:
+        return r
+    r.ok(f"config {CONFIG}")
+    node = find_node()
+    if not node:
+        r.miss(f"Node >= {MIN_NODE[0]}.{MIN_NODE[1]}", "install a current Node (dsh 0.2 needs it), e.g. `brew install node`")
+        return r
+    r.ok(f"node {node} ({'.'.join(map(str, node_version(node)))})")
+    dsh_bin = find_dsh_bin()
+    if not dsh_bin:
+        r.miss("dsh (@deepseek-ai/dsh)", "npm install -g @deepseek-ai/dsh")
+        return r
+    rc, ver = sh([node, str(dsh_bin), "--version"], timeout=60)
+    r.ok(f"dsh {ver.strip()}")
+    for tool, fix in (("python3", "install Python 3"), ("zstd", "brew install zstd (dsh-turns reads zstd session logs)")):
+        (r.ok(f"{tool} {shutil.which(tool)}") if shutil.which(tool) else r.miss(tool, fix))
+    pnpm = shutil.which("pnpm", path=clean_env(c, node)["PATH"])
+    (r.ok(f"pnpm {pnpm}") if pnpm else r.miss("pnpm (dsh installs plugins with it)", "dsh-claude-bridge setup (or npm install -g pnpm)"))
+    for p in c["PROFILES_LIST"]:
+        pf = DSH_HOME / "profiles" / p / "cordis.patch.yml"
+        text = pf.read_text() if pf.exists() else ""
+        clash = conflicts(text)
+        if clash:
+            r.miss(f"profile {p}: entries {clash} set outside the managed block", f"remove them from {pf} (setup refuses to override hand-written entries)")
+        _, block, _ = split_patch(text)
+        if block is None or block.strip() != managed_block(c, p).strip():
+            r.miss(f"profile {p}: managed block {'missing' if block is None else 'out of date'}", "dsh-claude-bridge setup")
+        dump = dump_config(c, node, dsh_bin, p)
+        (r.ok(f"profile {p}: plugin loaded") if re.search(r"^- id: dsh-claude-bridge$", dump, re.M)
+         else r.miss(f"profile {p}: plugin dsh-claude-bridge not loaded", "dsh-claude-bridge setup"))
+        if (DSH_HOME / "profiles" / p / "node_modules/@deepseek-ai/dsh-app-boot").exists():
+            r.miss(f"profile {p}: second dsh copy in node_modules (settings saves fail)", "dsh-claude-bridge setup")
+    if "web" in c["PROFILES_LIST"] and c["HELPERS"] != "none":
+        wpkg = DSH_HOME / "profiles/web/package.json"
+        if "@deepseek-ai/dsh-subagent-claude-code" not in (json.loads(wpkg.read_text()).get("dependencies", {}) if wpkg.exists() else {}):
+            r.miss("web: @deepseek-ai/dsh-subagent-claude-code not installed (needed by the helpers)", "dsh-claude-bridge setup")
+    acpx = shutil.which("acpx")
+    if not acpx:
+        r.miss("acpx", f"npm install -g acpx@{ACPX_VERSION}")
+    else:
+        cfg = HOME / ".acpx/config.json"
+        agent = json.loads(cfg.read_text()).get("agents", {}).get("dsh", {}).get("command", "") if cfg.exists() else ""
+        (r.ok(f"acpx {acpx} with agent dsh") if "dsh-claude-bridge" in agent
+         else r.miss("acpx agent `dsh`", "dsh-claude-bridge setup"))
+    for b in ("dsh-claude-bridge", "dsh-wait-turn", "dsh-turns"):
+        (r.ok(f"{b} on PATH") if shutil.which(b) else r.miss(f"{b} not on PATH", f"dsh-claude-bridge setup (links into {c['BIN_DIR']}; add it to PATH)"))
+    skill = HOME / ".claude/skills/dsh-harness/SKILL.md"
+    (r.ok("Claude Code skill dsh-harness") if skill.exists() else r.miss("Claude Code skill dsh-harness", "dsh-claude-bridge setup"))
+    if c["MCACP"] == "1":
+        if shutil.which("claude"):
+            rc, out = sh(["claude", "mcp", "get", "mcacp"], timeout=60)
+            (r.ok("mcacp registered in Claude Code") if rc == 0 and "mcacp" in out
+             else r.miss("mcacp MCP server in Claude Code", "dsh-claude-bridge setup"))
+        else:
+            r.warn("claude CLI not found: mcacp skipped", "install Claude Code or set MCACP=0")
+    if live and not r.missing:
+        live_check(c, r)
+    return r
+
+
+def live_check(c, r):
+    d = Path(tempfile.mkdtemp(prefix="dsh-bridge-live-"))
+    before = EVENTS.read_text().count("\n") if EVENTS.exists() else 0
+    rc, out = sh(["acpx", "--deny-all", "--timeout", "120", "dsh", "exec", "Reply with exactly: BRIDGE-LIVE-OK"],
+                 timeout=180, cwd=str(d))
+    (r.ok("live: dsh answered through acpx") if "BRIDGE-LIVE-OK" in out
+     else r.miss("live: dsh turn through acpx", f"acpx output: {out.strip()[-300:]}"))
+    time.sleep(1)
+    lines = EVENTS.read_text().splitlines()[before:] if EVENTS.exists() else []
+    real = os.path.realpath(d)
+    (r.ok("live: turn event written") if any(os.path.realpath(json.loads(l).get("cwd") or "") == real for l in lines if l.strip())
+     else r.miss("live: no turn event for that turn", f"check the plugin is loaded in the acp profile; events file {EVENTS}"))
+    shutil.rmtree(d, ignore_errors=True)
+
+
+# ---------- setup ----------
+
+def setup(c, source):
+    if c is None:
+        CONFIG.parent.mkdir(parents=True, exist_ok=True)
+        CONFIG.write_text(TEMPLATE)
+        print(f"wrote a template to {CONFIG}: fill in the provider fields, then run setup again")
+        return 2
+    probs = config_problems(c)
+    if probs:
+        print("config problems: " + "; ".join(probs) + f"  ({CONFIG})")
+        return 2
+    node, dsh_bin = find_node(), find_dsh_bin()
+    if not node or not dsh_bin:
+        print("need Node >= 24.9 and @deepseek-ai/dsh first (`npm install -g @deepseek-ai/dsh`)")
+        return 2
+    env = clean_env(c, node)
+    failed = []
+    def step(msg):
+        print(f"- {msg}", flush=True)
+        if "FAILED" in msg:
+            failed.append(msg)
+    if not shutil.which("pnpm", path=env["PATH"]):  # dsh runs pnpm for every plugin operation
+        rc, out = sh(["npm", "install", "-g", "pnpm"], env={**os.environ})
+        step(f"pnpm {'installed' if rc == 0 else 'FAILED: ' + out[-300:]}")
+
+    bin_dir = c["BIN_DIR_PATH"]
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    for b in ("dsh-claude-bridge", "dsh-wait-turn", "dsh-turns"):
+        link = bin_dir / b
+        if link.is_symlink() or link.exists():
+            if link.resolve() == (PKG / "bin" / b).resolve():
+                continue
+            link.rename(link.with_name(f"{b}.before-bridge-{int(time.time())}"))
+        link.symlink_to(PKG / "bin" / b)
+        step(f"linked {link}")
+
+    skills = HOME / ".claude/skills"
+    target = skills / "dsh-harness"
+    if not (target.is_symlink() and target.resolve() == (PKG / "skills/dsh-harness").resolve()):
+        skills.mkdir(parents=True, exist_ok=True)
+        if target.exists() or target.is_symlink():
+            target.rename(skills / f"dsh-harness.before-bridge-{int(time.time())}")
+        target.symlink_to(PKG / "skills/dsh-harness")
+        step(f"linked skill {target}")
+
+    ver_rc, dsh_ver = sh([node, str(dsh_bin), "--version"], timeout=60)
+    for p in c["PROFILES_LIST"]:
+        pdir = DSH_HOME / "profiles" / p
+        if not pdir.exists():
+            sh(dsh_cmd(c, node, dsh_bin, "--profile", p, "--dump-config"), timeout=180, env=env)  # shipped profiles auto-initialise
+        pf = pdir / "cordis.patch.yml"
+        text = pf.read_text() if pf.exists() else ""
+        clash = conflicts(text)
+        if clash:
+            print(f"! profile {p}: {clash} already set outside the managed block in {pf}; remove them and re-run")
+            return 1
+        if write_block(pf, managed_block(c, p)):
+            step(f"profile {p}: managed block written")
+        deps = json.loads((pdir / "package.json").read_text()).get("dependencies", {}) if (pdir / "package.json").exists() else {}
+        if p == "web" and c["HELPERS"] != "none" and "@deepseek-ai/dsh-subagent-claude-code" not in deps:
+            rc, out = sh(dsh_cmd(c, node, dsh_bin, "plugin", "--profile", p, "add", f"@deepseek-ai/dsh-subagent-claude-code@{dsh_ver.strip()}"), env=env)
+            step(f"profile {p}: Claude Code subagent provider {'installed' if rc == 0 else 'FAILED: ' + out[-300:]}")
+        deps = json.loads((pdir / "package.json").read_text()).get("dependencies", {}) if (pdir / "package.json").exists() else {}
+        if "dsh-turn-events" in deps:
+            sh(dsh_cmd(c, node, dsh_bin, "plugin", "--profile", p, "remove", "dsh-turn-events"), env=env)
+            step(f"profile {p}: removed old dsh-turn-events (renamed to dsh-claude-bridge)")
+        if not re.search(r"^- id: dsh-claude-bridge$", dump_config(c, node, dsh_bin, p), re.M):
+            rc, out = sh(dsh_cmd(c, node, dsh_bin, "plugin", "--profile", p, "add", source), env=env)
+            step(f"profile {p}: plugin {source} {'added' if rc == 0 else 'FAILED: ' + out[-300:]}")
+        if (pdir / "node_modules/@deepseek-ai/dsh-app-boot").exists():
+            fix_single_dsh(pdir, dsh_bin, env, node, c)
+            step(f"profile {p}: linked @deepseek-ai/dsh to the global install (one dsh copy)")
+
+    if not shutil.which("acpx"):
+        rc, out = sh(["npm", "install", "-g", f"acpx@{ACPX_VERSION}"], env={**os.environ})
+        step(f"acpx {ACPX_VERSION} {'installed' if rc == 0 else 'FAILED: ' + out[-300:]}")
+    if json_merge(HOME / ".acpx/config.json", {"agents": {"dsh": {"command": f"{bridge_cmd(c)} run --profile acp"}}}):
+        step("acpx agent `dsh` configured")
+
+    if c["MCACP"] == "1" and shutil.which("claude"):
+        mdir = HOME / ".local/share/mcacp"
+        mdir.mkdir(parents=True, exist_ok=True)
+        pkg = {"name": "mcacp-local", "private": True, "dependencies": {"mcacp": MCACP_VERSION}, "overrides": {"zod": "^4.6.6"}}
+        if json_merge(mdir / "package.json", pkg) or not (mdir / "node_modules/mcacp").exists():
+            rc, out = sh(["npm", "install", "--ignore-scripts"], cwd=str(mdir), env={**os.environ})
+            step(f"mcacp {MCACP_VERSION} {'installed (zod override)' if rc == 0 else 'FAILED: ' + out[-300:]}")
+        if json_merge(HOME / ".config/mcacp/mcacp.json", {"defaultPermissionPolicy": "operator",
+                      "agent_servers": {"dsh": {"command": bridge_cmd(c), "args": ["run", "--profile", "acp"]}}}):
+            step("mcacp agent `dsh` configured")
+        rc, _ = sh(["claude", "mcp", "get", "mcacp"], timeout=60)
+        if rc != 0:
+            rc, out = sh(["claude", "mcp", "add", "--scope", "user", "mcacp", "--", node, str(mdir / "node_modules/mcacp/dist/index.js")], timeout=60)
+            step(f"mcacp {'registered in Claude Code' if rc == 0 else 'registration FAILED: ' + out[-300:]}")
+    if failed:
+        print(f"setup finished with {len(failed)} failed step(s); fix them and re-run setup")
+        return 1
+    print("setup done; restart any running dsh host so it loads the profile changes, then run `dsh-claude-bridge doctor`")
+    return 0
+
+
+def fix_single_dsh(pdir, dsh_bin, env, node, c):
+    """A plugin that depends on @deepseek-ai/dsh installs a second copy; two dsh-app-boot copies break settings saves."""
+    ws = pdir / "pnpm-workspace.yaml"
+    text = ws.read_text() if ws.exists() else "packages:\n  - .\n"
+    link = f'"@deepseek-ai/dsh": "link:{dsh_bin.parent.parent}"'
+    if "@deepseek-ai/dsh\":" not in text:
+        text = text.rstrip("\n") + f"\n\n# dsh-claude-bridge: one dsh copy (a second dsh-app-boot breaks settings saves).\noverrides:\n  {link}\n"
+        ws.write_text(text)
+    sh(["pnpm", "install"], cwd=str(pdir), env={**os.environ})
+
+
+# ---------- run ----------
+
+def run(c, profile, args):
+    if c is None or config_problems(c):
+        sys.exit(f"dsh-claude-bridge: config incomplete ({CONFIG}); run `dsh-claude-bridge doctor`")
+    node, dsh_bin = find_node(), find_dsh_bin()
+    if not node or not dsh_bin:
+        sys.exit("dsh-claude-bridge: need Node >= 24.9 and @deepseek-ai/dsh")
+    os.execve(node, [node, str(dsh_bin), "--profile", profile, *args], clean_env(c, node))
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    d = sub.add_parser("doctor"); d.add_argument("--live", action="store_true")
+    s = sub.add_parser("setup")
+    s.add_argument("--source", help="plugin spec for `dsh plugin add` (default: this release on GitHub)")
+    r = sub.add_parser("run"); r.add_argument("--profile", required=True); r.add_argument("args", nargs=argparse.REMAINDER)
+    a = ap.parse_args()
+    c = load_config()
+    if a.cmd == "doctor":
+        rep = check(c, a.live)
+        print(f"\n{'all good' if not rep.missing else str(rep.missing) + ' missing'}")
+        return 0 if not rep.missing else 1
+    if a.cmd == "setup":
+        version = json.loads((PKG / "package.json").read_text())["version"]
+        return setup(c, a.source or f"github:ahmedibrahim085/dsh-claude-bridge#v{version}")
+    if a.cmd == "run":
+        run(c, a.profile, [x for x in a.args if x != "--"] if a.args[:1] == ["--"] else a.args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

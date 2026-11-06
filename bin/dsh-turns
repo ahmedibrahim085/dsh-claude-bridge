@@ -2,7 +2,7 @@
 """dsh-turns: one-shot lookup of finished DeepSeek Harness turns, with each turn's reply text.
 
 Read-only over ~/.dsh/sessions (each session is a zstd-compressed JSONL event log). For live,
-event-driven notification use the dsh-turn-events plugin (~/.local/state/dsh-events/turns.jsonl)
+event-driven notification use the dsh-claude-bridge plugin (~/.local/state/dsh-events/turns.jsonl)
 with `tail -F`; this tool is for "what did dsh answer?" after such an event, so it never loops.
 One JSON line per finished turn:
   {"ts", "session_id", "cwd", "title", "turn", "reason", "reply"}

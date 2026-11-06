@@ -1,6 +1,6 @@
-# dsh-turn-events bundle layer: mount the plugin on the host plane of any profile that lists this
+# dsh-claude-bridge bundle layer: mount the plugin on the host plane of any profile that lists this
 # bundle. The event file defaults to ~/.local/state/dsh-events/turns.jsonl; set `config.file` in your
-# profile's cordis.patch.yml (id: dsh-turn-events) or DSH_TURN_EVENTS_FILE to move it.
+# profile's cordis.patch.yml (id: dsh-claude-bridge) or DSH_TURN_EVENTS_FILE to move it.
 - insert:
-    - id: dsh-turn-events
-      name: 'dsh-turn-events'
+    - id: dsh-claude-bridge
+      name: 'dsh-claude-bridge'

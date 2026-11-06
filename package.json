@@ -1,7 +1,7 @@
 {
-  "name": "dsh-turn-events",
-  "version": "0.1.0",
-  "description": "Machine-readable finished-turn events for DeepSeek Harness (dsh): one JSONL line per turn, plus an event-driven wait CLI so Claude Code, scripts and CI can react when dsh is done.",
+  "name": "dsh-claude-bridge",
+  "version": "0.2.0",
+  "description": "Claude Code <-> DeepSeek Harness (dsh) bridge: finished-turn events, an event-driven wait CLI, doctor/setup for acpx, mcacp and the Claude Code helpers (provider and Claude brains), and the dsh-harness skill.",
   "type": "module",
   "main": "./index.mjs",
   "exports": {
@@ -9,6 +9,7 @@
     "./package.json": "./package.json"
   },
   "bin": {
+    "dsh-claude-bridge": "bin/dsh-claude-bridge",
     "dsh-wait-turn": "bin/dsh-wait-turn",
     "dsh-turns": "bin/dsh-turns"
   },
@@ -16,8 +17,10 @@
     "index.mjs",
     "cordis.patch.yml",
     "bin/",
+    "skills/",
     "README.md",
     "CHANGELOG.md",
+    "MAINTENANCE.md",
     "LICENSE"
   ],
   "dsh": {
@@ -26,13 +29,14 @@
       "patch": "./cordis.patch.yml"
     },
     "catalog": {
-      "category": "notify",
-      "summary": "Writes one JSON line per finished dsh turn so other agents, scripts and CI can react without polling.",
+      "category": "integration",
+      "summary": "Bridges Claude Code and dsh: turn events, wait CLI, setup/doctor for acpx, mcacp and Claude Code helpers on two brains.",
       "capabilities": [
         "turn-events-jsonl",
         "event-driven-wait-cli",
-        "no-shell",
-        "no-network"
+        "setup-doctor",
+        "claude-code-helpers",
+        "claude-code-skill"
       ]
     }
   },
@@ -41,23 +45,25 @@
     "dsh": ">=0.2.2-rc.1 <0.3.0"
   },
   "scripts": {
-    "test": "node --test test/ && sh test/wait-turn.test.sh"
+    "test": "node --test test/ && sh test/wait-turn.test.sh && python3 -m unittest discover -s test -p 'test_*.py'"
   },
   "keywords": [
-    "dsh-plugin",
-    "dsh",
-    "deepseek-harness",
-    "events",
-    "notifications",
+    "acp",
     "agents",
+    "bridge",
     "claude-code",
-    "acp"
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "events",
+    "mcp",
+    "notifications"
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ahmedibrahim085/dsh-turn-events.git"
+    "url": "git+https://github.com/ahmedibrahim085/dsh-claude-bridge.git"
   },
-  "homepage": "https://github.com/ahmedibrahim085/dsh-turn-events#readme",
-  "bugs": "https://github.com/ahmedibrahim085/dsh-turn-events/issues",
+  "homepage": "https://github.com/ahmedibrahim085/dsh-claude-bridge#readme",
+  "bugs": "https://github.com/ahmedibrahim085/dsh-claude-bridge/issues",
   "license": "MIT"
 }

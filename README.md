@@ -1,132 +1,107 @@
-# dsh-turn-events
+# dsh-claude-bridge
 
-**Know when DeepSeek Harness is done — from another agent, a script or CI.**
+**Claude Code ↔ DeepSeek Harness (dsh), both directions, with one setup command.**
 
-`dsh-turn-events` is a [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh) (dsh) plugin that writes one JSON line every time a dsh agent finishes a turn. Other programs react to that line event-driven: a Claude Code Monitor wakes on it, a `claude -p` run or shell script blocks on it with the bundled `dsh-wait-turn`, and `dsh-turns` reads back what dsh answered.
+| Direction | What you get |
+|---|---|
+| Claude Code → dsh | Multi-turn, resumable dsh sessions from Claude Code through [acpx](https://www.npmjs.com/package/acpx) (shell) or [mcacp](https://www.npmjs.com/package/mcacp) (MCP tools), plus headless one-shots |
+| dsh → Claude Code: "done" | A dsh plugin writes one JSON line per finished turn; `dsh-wait-turn` blocks on it without polling, a Claude Code Monitor wakes on it, `dsh-turns` reads the answer |
+| dsh → Claude Code: "do this" | Two Claude Code helpers inside dsh: `subagent_claude_code` on your dsh provider, `subagent_claude_code_claude` on Claude with your Claude Code login |
+| Claude Code knows how | The `dsh-harness` skill: checks the setup first, then picks the right surface |
+
+`dsh-claude-bridge doctor` checks every piece; `dsh-claude-bridge setup` installs or repairs what is missing and is safe to re-run.
+
+## Install
+
+Requires macOS or Linux, Node ≥ 24.9, Python 3, `zstd`, and [dsh 0.2.x](https://www.npmjs.com/package/@deepseek-ai/dsh) (`npm install -g @deepseek-ai/dsh`). Claude Code is optional (needed for the skill to be useful and for mcacp).
+
+```bash
+dsh plugin --profile web add github:ahmedibrahim085/dsh-claude-bridge#v0.2.0
+~/.dsh/profiles/web/node_modules/dsh-claude-bridge/bin/dsh-claude-bridge setup
+```
+
+The first `setup` writes `~/.config/dsh-claude-bridge/config` and stops. Fill in your provider, run `setup` again, restart any running dsh host, then:
+
+```bash
+dsh-claude-bridge doctor --live      # every line [ok]; --live runs one real dsh turn
+```
+
+### Configuration
+
+```ini
+PROVIDER_ID=zai-glm                                   # any id; dsh shows it in the model list
+PROVIDER_API=anthropic-messages
+PROVIDER_BASE_URL=https://open.bigmodel.cn/api/anthropic
+PROVIDER_KEY_FILE=~/.glm-env                          # an env file holding the key ...
+PROVIDER_KEY_VAR=ANTHROPIC_AUTH_TOKEN                 # ... under this name (read at run time, never copied)
+MODELS=glm-5.3 glm-5.3-flash                          # first = default
+PROFILES=web acp headless
+HELPERS=both                                          # provider | claude | both | none
+HELPER_PERMISSION_MODE=auto                           # auto | acceptEdits | dontAsk | plan
+MCACP=1
+PASS_ENV=                                             # extra variables to pass into dsh
+BIN_DIR=~/.local/bin
+```
+
+### What `setup` does
+
+- Links `dsh-claude-bridge`, `dsh-wait-turn` and `dsh-turns` into `BIN_DIR`, and the skill into `~/.claude/skills/dsh-harness`.
+- Writes one marked block per profile into `~/.dsh/profiles/<p>/cordis.patch.yml`: your provider and default model, the ACP route, and the helpers. Your own entries stay untouched; if they set the same ids, setup stops and names them instead of overriding.
+- Adds this plugin to each profile, installs dsh's Claude Code helper package when helpers are on, and keeps one dsh copy per profile.
+- Installs pnpm and acpx if missing and registers the `dsh` agent in acpx; installs mcacp (with a patched `zod`) and registers it in Claude Code.
+
+## Use
+
+Start dsh through the bridge, so it gets a clean environment and your provider key:
+
+```bash
+dsh-claude-bridge run --profile web -- --no-open          # web UI
+dsh-claude-bridge run --profile headless -- "summarise README.md"
+```
+
+From Claude Code (or any shell):
+
+```bash
+acpx dsh sessions new --name build
+acpx --approve-all dsh prompt -s build --no-wait "run the tests and fix failures"
+dsh-wait-turn --cwd "$PWD" --timeout 3600       # returns when that turn ends; exit 2 = timeout
+dsh-turns --since 1h                            # what dsh answered
+```
+
+Inside dsh, ask for a helper by name, e.g. "use subagent_claude_code_claude to review this diff". The helper runs in the background; its result arrives as a later turn.
+
+Event line (`~/.local/state/dsh-events/turns.jsonl`):
 
 ```json
 {"ts":"2026-11-06T13:16:30.877Z","event":"turn-stopping","session_id":"session-d06e3c3a-…","cwd":"/work/repo","turn":6,"agent_preset":"standard"}
 ```
 
-## Why
+## How it differs
 
-dsh can run long, multi-step work in the web UI, over ACP (`dsh --profile acp`, used by acpx and editors) or headless. When another agent hands dsh a task, it needs to know when dsh is finished without polling and without a human watching a browser tab.
-
-The obvious route — dsh's Claude Code hook bridge with a `Stop` hook — does not work for this: dsh runs hook commands inside its file sandbox, which denies every write (we measured `Operation not permitted` for `~/.dsh`, `~/.local/state` and `/tmp`, even in full-access sessions). This plugin instead runs in the dsh host process, so it needs no shell, no hook bridge and no change to the sandbox.
-
-## How it differs from dsh notification plugins
-
-Existing plugins notify **people**: desktop toasts and sounds (`dsh-notify-tray`, `dsh-notification`, `dsh-notify-plugin`), browser badges (`@zhanghanxuan/dsh-notify`), or chat and push services (`dsh-notify-me`, `dsh-notify-plugin`'s Telegram/WeCom). Others go the other way, sending work **into** dsh (`dsh-inbox-mcp`, `dsh-a2a-server`) or waking a session on GitHub activity (`dsh-session-superagent`).
-
-`dsh-turn-events` is for **programs**:
-
-| | dsh-turn-events | typical notify plugin |
-|---|---|---|
-| Output | local JSONL event stream, one line per turn | toast, sound, chat message |
-| Consumer | other agents, scripts, CI | a person |
-| Waiting on it | `dsh-wait-turn` (kernel-event wait), `tail -F` | — |
-| Shell commands | none | usually `osascript` / `notify-send` |
-| Network | none | often webhooks / chat APIs |
-| Sandbox / hooks | not involved | — |
-
-It pairs with them rather than replacing them.
-
-## Install
-
-Requires dsh 0.2.x and Node ≥ 24.9.
-
-```bash
-dsh plugin --profile web add github:ahmedibrahim085/dsh-turn-events
-```
-
-Repeat for every profile whose turns you want to see (for example `--profile acp`). The package's bundle layer mounts the plugin; restart the dsh host afterwards. Check it:
-
-```bash
-tail -1 ~/.local/state/dsh-events/turns.jsonl    # after any turn: a fresh line
-```
-
-The CLIs live in the package's `bin/`. Put them on your PATH, for example:
-
-```bash
-ln -s ~/.dsh/profiles/web/node_modules/dsh-turn-events/bin/dsh-wait-turn ~/.local/bin/
-ln -s ~/.dsh/profiles/web/node_modules/dsh-turn-events/bin/dsh-turns ~/.local/bin/
-```
-
-They need Python 3; `dsh-turns` also needs the `zstd` CLI (dsh compresses its session logs).
-
-## Use
-
-**Be told when any dsh turn finishes** (Claude Code Monitor, a terminal, a log shipper):
-
-```bash
-tail -n 0 -F ~/.local/state/dsh-events/turns.jsonl
-```
-
-**Block until a specific turn finishes** (`claude -p`, scripts, CI):
-
-```bash
-dsh-wait-turn --cwd "$PWD" --timeout 1800      # or --session <dsh session id>
-```
-
-Exits 0 with the event line when a matching turn finishes, 2 on timeout. On macOS/BSD it sleeps on a kernel kqueue watch, so waiting costs no CPU; on other systems it checks the file size once a second.
-
-**Read what dsh answered:**
-
-```bash
-dsh-turns --session <session_id>               # or --since 10m
-```
-
-Example with [acpx](https://www.npmjs.com/package/acpx): queue a long dsh task, wait for it, read the result.
-
-```bash
-acpx dsh sessions new --name build
-acpx --approve-all dsh prompt -s build --no-wait "run the test suite and fix failures"
-dsh-wait-turn --cwd "$PWD" --timeout 3600 && dsh-turns --since 1h
-```
-
-acpx's session id differs from dsh's, so match on `--cwd` when you started the session through acpx.
-
-## Configuration
-
-| Setting | Default | How to change |
-|---|---|---|
-| Event file | `~/.local/state/dsh-events/turns.jsonl` | `config.file` on the `dsh-turn-events` entry in your profile's `cordis.patch.yml`, or `DSH_TURN_EVENTS_FILE` (read by the plugin and by `dsh-wait-turn`) |
-
-```yaml
-# ~/.dsh/profiles/web/cordis.patch.yml
-- id: dsh-turn-events
-  config:
-    file: /path/to/turns.jsonl
-```
-
-## Event fields
-
-| Field | Meaning |
-|---|---|
-| `ts` | ISO time the turn stopped |
-| `event` | always `turn-stopping` |
-| `session_id` | dsh session id (directory name under `~/.dsh/sessions/<workspace>/`) |
-| `cwd` | the session's working directory |
-| `turn` | turn number within the session |
-| `agent_preset` | the session's agent preset, when dsh records one |
+dsh notification plugins (`dsh-notify-tray`, `dsh-notify-plugin`, `dsh-notify-me`, …) notify **people** with toasts, sounds or chat messages. Inbound bridges (`dsh-inbox-mcp`, `dsh-a2a-server`) send work **into** dsh. This bridge connects dsh and Claude Code **as programs**: a local event stream, a wait command, both-way delegation, and the setup that makes them work together.
 
 ## Safety
 
-- Observes only: it never steers, blocks or edits a turn, and runs no shell commands.
-- Writes one local file with mode `0600`; no network.
-- A failed write (full disk, bad path) is logged as a warning and never breaks the session.
+- The turn-events plugin only observes: no shell commands, no network, one local file (mode `0600`), and a failed write never breaks a turn.
+- Keys stay in your key file; dsh receives them only as `BRIDGE_PROVIDER_KEY` at run time.
+- The Claude Code helpers run **outside dsh's sandbox**. The default `auto` permission mode lets them edit and run commands unattended while Claude Code's classifier blocks risky actions; `bypassPermissions` is deliberately not offered.
 
 ## Limits
 
-- It listens to dsh's internal `agent/turn-stopping` event, which is not a documented public API. A dsh release may rename it; after updating dsh, run one turn and check the file gets a line.
-- Only profiles that list the bundle emit events.
-- Tested on macOS with dsh 0.2.2-rc.1 and Node 26, in web (including full-access) and ACP (read-only) sessions.
+- Turn events use dsh's internal `agent/turn-stopping` event, which is not a public API. [MAINTENANCE.md](MAINTENANCE.md) lists every piece an update can break and the check for it.
+- The provider helper needs an Anthropic-compatible endpoint (`PROVIDER_API=anthropic-messages`).
+- The helper tools are added at host level; agent presets that list their own tool rows need a row for each helper.
+- `dsh-wait-turn` uses kernel file events on macOS/BSD and a 1-second size check elsewhere.
+- Tested on macOS with dsh 0.2.2-rc.1, Claude Code 2.1.319, Node 26.
 
 ## Development
 
 ```bash
-npm test     # node --test (plugin) + sh test/wait-turn.test.sh (CLI)
+npm test                                  # plugin (node --test), wait CLI (sh), bridge (python unittest)
+PROVIDER_ID=… PROVIDER_BASE_URL=… PROVIDER_KEY_FILE=… MODELS=… sh test/clean-install.sh   # throwaway HOME, real dsh turn
 ```
+
+The `skills/dsh-harness/evals/` cases follow the `claude plugin eval` layout.
 
 ## License
 

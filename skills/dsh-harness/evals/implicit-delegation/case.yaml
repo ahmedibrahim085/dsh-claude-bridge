@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: implicit-delegation
+expected_outcome: |
+  The skill triggers without the user naming acpx or dsh, delegates the count to dsh, and reports dsh's answer (3).

@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: notify-wait-for-queued-turn
+expected_outcome: |
+  The task is queued with acpx --no-wait, the run blocks on dsh-wait-turn (not a sleep/poll loop) until the turn-events line arrives, then reads the reply NOTIFY-EVAL-OK with dsh-turns or acpx history, and closes the session.

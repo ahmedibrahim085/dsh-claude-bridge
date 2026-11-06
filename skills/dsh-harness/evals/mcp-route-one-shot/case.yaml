@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: mcp-route-one-shot
+expected_outcome: |
+  dsh is driven via mcp__mcacp__* tools (initialize, new_session, prompt_start, prompt) and replies MCP-EVAL-OK.
