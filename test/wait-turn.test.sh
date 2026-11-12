@@ -8,10 +8,13 @@ trap 'rm -rf "$tmp"' EXIT
 export DSH_TURN_EVENTS_FILE="$tmp/turns.jsonl"
 : > "$DSH_TURN_EVENTS_FILE"
 fail() { echo "FAIL: $1"; exit 1; }
+# The waiter only sees lines written after it opens the file, so wait until it has the file open
+# (a fixed sleep raced under load: 2 of 3 runs passed at load 6-9 on 2026-11-12).
+ready() { i=0; until lsof -p "$1" 2>/dev/null | grep -q "$2"; do i=$((i+1)); [ "$i" -gt 150 ] && fail "waiter $1 never opened $2"; sleep 0.1; done; }
 
 "$here/bin/dsh-wait-turn" --session abc --timeout 10 > "$tmp/out" &
 pid=$!
-sleep 1
+ready "$pid" turns.jsonl
 printf '{"session_id":"zzz","cwd":"/x"}\n{"session_id":"abc-1","cw' >> "$DSH_TURN_EVENTS_FILE"
 sleep 1
 printf 'd":"/y","turn":2}\n' >> "$DSH_TURN_EVENTS_FILE"
@@ -30,7 +33,7 @@ echo "ok - timeout exits 2"
 # dsh web ids look like session-<uuid>; users pass the short id from the middle.
 "$here/bin/dsh-wait-turn" --session d06e3c3a --timeout 10 > "$tmp/out2" &
 pid=$!
-sleep 1
+ready "$pid" turns.jsonl
 printf '{"session_id":"session-d06e3c3a-5af2-417c-a283-bd7534bf1608","turn":7}\n' >> "$DSH_TURN_EVENTS_FILE"
 wait "$pid" || fail "short id inside session-<uuid> did not match"
 grep -q '"turn": 7' "$tmp/out2" || fail "wrong event for short id: $(cat "$tmp/out2")"
@@ -40,7 +43,7 @@ echo "ok - matches a short id inside session-<uuid>"
 export CLAUDE_TURN_EVENTS_FILE="$tmp/claude.jsonl"
 "$here/bin/dsh-wait-turn" --claude --cwd /work --timeout 10 > "$tmp/out3" &
 pid=$!
-sleep 1
+ready "$pid" claude.jsonl
 printf '{"event":"turn-stopping","session_id":"dsh-1","cwd":"/work"}\n' >> "$DSH_TURN_EVENTS_FILE"
 printf '{"event":"stop","session_id":"c-1","cwd":"/work","last_assistant_message":"done"}\n' >> "$CLAUDE_TURN_EVENTS_FILE"
 wait "$pid" || fail "--claude did not match a Claude stop event"
@@ -53,7 +56,7 @@ if command -v sandbox-exec >/dev/null 2>&1; then
   DSH_TURN_EVENTS_FILE="$tmp/ro.jsonl" sandbox-exec -p "(version 1)(allow default)(deny file-write* (subpath \"$(cd "$tmp" && pwd -P)\"))" \
     "$here/bin/dsh-wait-turn" --session ro --timeout 10 > "$tmp/out4" 2> "$tmp/err4" &
   pid=$!
-  sleep 1
+  ready "$pid" ro.jsonl
   printf '{"session_id":"ro-1"}\n' >> "$tmp/ro.jsonl"
   wait "$pid" || fail "waiter failed without write access: $(cat "$tmp/err4")"
   grep -q '"ro-1"' "$tmp/out4" || fail "no event under a no-write sandbox"
