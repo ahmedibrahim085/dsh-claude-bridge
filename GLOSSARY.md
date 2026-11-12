@@ -24,6 +24,10 @@ _Avoid_: GLM helper, subagent
 The Claude Code helper inside dsh that runs on Claude with the user's Claude Code login.
 _Avoid_: Claude helper, real Claude
 
+**Broker**:
+The one dsh that every Claude Code session of a user shares when it delegates to dsh. It starts on first use and stops when no session has used it for a while.
+_Avoid_: daemon, host (that is dsh's web host), shared process (when meaning mcacp's per-session one)
+
 ### Signals
 
 **Done signal**:
