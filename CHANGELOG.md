@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-12
+
+### Changed
+
+- `setup` installs by detection (#2): with no dsh it writes nothing; without Claude Code on PATH it installs only the dsh side and skips the skill, MCP registrations, Stop hook, channel, `claude-dsh` and the helper that runs on your Claude Code login. The provider helper stays: it runs the Claude Agent SDK's own binary, not `claude` on PATH. `doctor` reports the skipped side as a warning, not as missing.
+
+### Fixed
+
+- `uninstall` no longer crashes with `FileNotFoundError: 'claude'` when Claude Code was removed after setup; it leaves the mcacp registration in place and says how to remove it.
+
 ## [0.4.1] - 2026-11-06
 
 ### Fixed
@@ -112,7 +122,8 @@ First release, as `dsh-turn-events`.
 
 Known limit: the plugin listens to dsh's internal `agent/turn-stopping` event, which is not a documented public API.
 
-[Unreleased]: https://github.com/ahmedibrahim085/dsh-claude-bridge/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/dsh-claude-bridge/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/ahmedibrahim085/dsh-claude-bridge/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/ahmedibrahim085/dsh-claude-bridge/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/ahmedibrahim085/dsh-claude-bridge/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ahmedibrahim085/dsh-claude-bridge/compare/v0.2.4...v0.3.0

@@ -13,7 +13,8 @@ npm_prefix=$(npm config get prefix)
 tmp=$(mktemp -d)
 [ -n "${KEEP:-}" ] || trap 'rm -rf "$tmp"' EXIT; echo "tmp=$tmp"
 export HOME="$tmp/home" NPM_CONFIG_PREFIX="$npm_prefix"
-claude_dir=$(dirname "$(command -v claude 2>/dev/null || echo /nonexistent/claude)")
+# NO_CLAUDE=1: test a machine without Claude Code (claude left off PATH); setup must install the dsh side only.
+if [ -n "${NO_CLAUDE:-}" ]; then claude_dir=/nonexistent; else claude_dir=$(dirname "$(command -v claude 2>/dev/null || echo /nonexistent/claude)"); fi
 export PATH="$HOME/.local/bin:$npm_prefix/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$claude_dir"
 mkdir -p "$HOME/.config/dsh-claude-bridge"
 key_file=$(eval echo "$PROVIDER_KEY_FILE" | sed "s#^$tmp/home#$real_home#")
@@ -50,10 +51,20 @@ echo "== doctor --live"
 grep -q "live: dsh answered through acpx" "$tmp/d1" || fail "no live answer"
 grep -q "live: turn event written" "$tmp/d1" || fail "no live turn event"
 cat "$tmp/d1"
-for p in web acp headless; do grep -q "id: dsh-claude-channel" "$HOME/.dsh/profiles/$p/cordis.patch.yml" || fail "no send_to_claude entry in $p"; done
-[ -x "$HOME/.local/bin/claude-dsh" ] || fail "claude-dsh not linked"
-grep -q "dsh-claude-channel" "$HOME/.config/dsh-claude-bridge/channel-mcp.json" || fail "channel config missing"
-grep -q "/claude-turn-event" "$HOME/.claude/settings.json" || fail "Stop hook missing from settings.json"
+if [ -n "${NO_CLAUDE:-}" ]; then
+  grep -q "Claude Code side skipped" "$tmp/d1" || fail "doctor did not name the skipped Claude side"
+  [ ! -e "$HOME/.claude" ] || fail "setup wrote under ~/.claude without Claude Code: $(find "$HOME/.claude" | head -3)"
+  for p in web acp headless; do ! grep -qE "id: (dsh-claude-channel|subagent-claude-code-claude)" "$HOME/.dsh/profiles/$p/cordis.patch.yml" || fail "Claude-side entry in $p"; done
+  grep -q "^- id: subagent-claude-code$" "$HOME/.dsh/profiles/web/cordis.patch.yml" || fail "provider helper missing from web without Claude Code"
+  for b in claude-dsh claude-turn-event dsh-claude-channel; do [ ! -e "$HOME/.local/bin/$b" ] || fail "$b linked without Claude Code"; done
+  [ ! -e "$HOME/.config/dsh-claude-bridge/channel-mcp.json" ] || fail "channel config written without Claude Code"
+  echo "ok - no Claude Code: dsh side only, Claude side reported as skipped"
+else
+  for p in web acp headless; do grep -q "id: dsh-claude-channel" "$HOME/.dsh/profiles/$p/cordis.patch.yml" || fail "no send_to_claude entry in $p"; done
+  [ -x "$HOME/.local/bin/claude-dsh" ] || fail "claude-dsh not linked"
+  grep -q "dsh-claude-channel" "$HOME/.config/dsh-claude-bridge/channel-mcp.json" || fail "channel config missing"
+  grep -q "/claude-turn-event" "$HOME/.claude/settings.json" || fail "Stop hook missing from settings.json"
+fi
 echo "ok - clean install passes doctor --live"
 
 echo "== uninstall --dry-run (changes nothing)"

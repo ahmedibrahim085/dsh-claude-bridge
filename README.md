@@ -18,7 +18,7 @@
 Requires macOS or Linux, Node ≥ 24.9, Python 3, `zstd`, and [dsh 0.2.x](https://www.npmjs.com/package/@deepseek-ai/dsh) (`npm install -g @deepseek-ai/dsh`). Claude Code is optional (needed for the skill to be useful and for mcacp).
 
 ```bash
-dsh plugin --profile web add github:ahmedibrahim085/dsh-claude-bridge#v0.4.1
+dsh plugin --profile web add github:ahmedibrahim085/dsh-claude-bridge#v0.5.0
 ~/.dsh/profiles/web/node_modules/dsh-claude-bridge/bin/dsh-claude-bridge setup
 ```
 
@@ -50,7 +50,7 @@ BIN_DIR=~/.local/bin
 Run the two install commands with the new tag. The new `setup` moves your other profiles to the same release and keeps your config:
 
 ```bash
-dsh plugin --profile web add github:ahmedibrahim085/dsh-claude-bridge#v0.4.1
+dsh plugin --profile web add github:ahmedibrahim085/dsh-claude-bridge#v0.5.0
 ~/.dsh/profiles/web/node_modules/dsh-claude-bridge/bin/dsh-claude-bridge setup
 ```
 
@@ -66,6 +66,8 @@ dsh-claude-bridge uninstall              # remove it; add --purge to delete your
 `uninstall` removes only what `setup` made: the plugin and the managed block in each profile, the links and the skill, the channel config, the Stop hook in `~/.claude/settings.json`, the acpx `dsh` agent, and mcacp's `dsh` agent (plus mcacp itself when no other agent uses it). Your own profile entries, dsh, pnpm and acpx stay. Restart any running dsh host afterwards.
 
 ### What `setup` does
+
+`setup` installs each side only where it makes sense. With no dsh it writes nothing and names what is missing. With dsh but no Claude Code (`claude` not on PATH) it installs only the dsh side (profiles, plugin, turn events, acpx, `dsh-wait-turn`, `dsh-turns`), and `doctor` reports the Claude side as skipped. Install Claude Code later and re-run `setup` to add the Claude side.
 
 - Links `dsh-claude-bridge`, `dsh-wait-turn` and `dsh-turns` into `BIN_DIR`, and the skill into `~/.claude/skills/dsh-harness`.
 - Writes one marked block per profile into `~/.dsh/profiles/<p>/cordis.patch.yml`: your provider and default model, the ACP route, and the helpers. Your own entries stay untouched; if they set the same ids, setup stops and names them instead of overriding.

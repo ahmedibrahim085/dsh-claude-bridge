@@ -24,7 +24,9 @@ BEGIN = "# >>> dsh-claude-bridge managed block: edit the bridge config, then run
 END = "# <<< dsh-claude-bridge managed block <<<"
 MANAGED_IDS = ["llm-pi-ai", "agent-default-model", "acp", "subagent-claude-code",
                "subagent-claude-code-claude", "tool-subagent-claude-code-claude", "dsh-claude-channel"]
-BINS = ("dsh-claude-bridge", "dsh-wait-turn", "dsh-turns", "dsh-claude-channel", "claude-dsh", "claude-turn-event")
+DSH_BINS = ("dsh-claude-bridge", "dsh-wait-turn", "dsh-turns")
+CLAUDE_BINS = ("dsh-claude-channel", "claude-dsh", "claude-turn-event")  # useful only with Claude Code
+BINS = DSH_BINS + CLAUDE_BINS
 ACPX_VERSION = "0.21.1"   # tested with dsh 0.2.2-rc.1 on 2026-11-06
 MCACP_VERSION = "0.1.3"   # upstream pins an old zod; installed with a zod>=4.6.6 override
 MIN_NODE = (24, 9)        # dsh 0.2.x engines.node
@@ -89,6 +91,25 @@ def load_config():
     c["PROFILES_LIST"] = c["PROFILES"].split()
     c["BIN_DIR_PATH"] = Path(c["BIN_DIR"]).expanduser()
     return c
+
+
+def claude_found():
+    return shutil.which("claude") is not None
+
+
+def effective(c):
+    """The config as setup/doctor apply it: without Claude Code on PATH, every Claude-side feature is off
+    (the skill, MCP servers, channel and Stop hook serve Claude Code; of the helpers, only the Claude-login one needs it)."""
+    if c is None:
+        return None
+    e = dict(c, CLAUDE_SIDE=claude_found())
+    if not e["CLAUDE_SIDE"]:
+        # The provider helper runs the Claude Agent SDK's bundled binary, not `claude` on PATH (a provider turn with
+        # no `claude` on PATH replied, 2026-11-12); the Claude-login helper needs Claude Code. Invalid values stay
+        # as they are, so config_problems() still reports them.
+        e.update(HELPERS={"both": "provider", "claude": "none"}.get(e["HELPERS"], e["HELPERS"]),
+                 MCACP="0", CHANNEL="0", CLAUDE_DONE="0")
+    return e
 
 
 def config_problems(c):
@@ -342,17 +363,18 @@ def check(c, live=False):
         agent = json.loads(cfg.read_text()).get("agents", {}).get("dsh", {}).get("command", "") if cfg.exists() else ""
         (r.ok(f"acpx {acpx} with agent dsh") if "dsh-claude-bridge" in agent
          else r.miss("acpx agent `dsh`", "dsh-claude-bridge setup"))
-    for b in BINS:
+    claude_side = c.get("CLAUDE_SIDE", True)
+    if not claude_side:
+        r.warn("Claude Code side skipped: `claude` not found on PATH", "install Claude Code, then run dsh-claude-bridge setup")
+    for b in DSH_BINS + (CLAUDE_BINS if claude_side else ()):
         (r.ok(f"{b} on PATH") if shutil.which(b) else r.miss(f"{b} not on PATH", f"dsh-claude-bridge setup (links into {c['BIN_DIR']}; add it to PATH)"))
-    skill = HOME / ".claude/skills/dsh-harness/SKILL.md"
-    (r.ok("Claude Code skill dsh-harness") if skill.exists() else r.miss("Claude Code skill dsh-harness", "dsh-claude-bridge setup"))
-    if c["MCACP"] == "1":
-        if shutil.which("claude"):
-            rc, out = sh(["claude", "mcp", "get", "mcacp"], timeout=60)
-            (r.ok("mcacp registered in Claude Code") if rc == 0 and "mcacp" in out
-             else r.miss("mcacp MCP server in Claude Code", "dsh-claude-bridge setup"))
-        else:
-            r.warn("claude CLI not found: mcacp skipped", "install Claude Code or set MCACP=0")
+    if claude_side:
+        skill = HOME / ".claude/skills/dsh-harness/SKILL.md"
+        (r.ok("Claude Code skill dsh-harness") if skill.exists() else r.miss("Claude Code skill dsh-harness", "dsh-claude-bridge setup"))
+    if c["MCACP"] == "1" and claude_side:
+        rc, out = sh(["claude", "mcp", "get", "mcacp"], timeout=60)
+        (r.ok("mcacp registered in Claude Code") if rc == 0 and "mcacp" in out
+         else r.miss("mcacp MCP server in Claude Code", "dsh-claude-bridge setup"))
     if c.get("CLAUDE_DONE", "1") == "1":
         sp = claude_settings_file()
         stops = json.loads(sp.read_text(encoding="utf-8")).get("hooks", {}).get("Stop", []) if sp.exists() else []
@@ -425,6 +447,10 @@ def live_check(c, r):
 # ---------- setup ----------
 
 def setup(c, source):
+    node, dsh_bin = find_node(), find_dsh_bin()
+    if not node or not dsh_bin:  # checked first: without dsh nothing here is useful, so nothing is written
+        print("need Node >= 24.9 and @deepseek-ai/dsh first (`npm install -g @deepseek-ai/dsh`)")
+        return 2
     if c is None:
         CONFIG.parent.mkdir(parents=True, exist_ok=True)
         CONFIG.write_text(TEMPLATE)
@@ -434,11 +460,8 @@ def setup(c, source):
     if probs:
         print("config problems: " + "; ".join(probs) + f"  ({CONFIG})")
         return 2
-    node, dsh_bin = find_node(), find_dsh_bin()
-    if not node or not dsh_bin:
-        print("need Node >= 24.9 and @deepseek-ai/dsh first (`npm install -g @deepseek-ai/dsh`)")
-        return 2
     env = clean_env(c, node)
+    claude_side = c.get("CLAUDE_SIDE", True)
     failed = []
     def step(msg):
         print(f"- {msg}", flush=True)
@@ -450,15 +473,18 @@ def setup(c, source):
 
     bin_dir = c["BIN_DIR_PATH"]
     bin_dir.mkdir(parents=True, exist_ok=True)
-    for b in BINS:
+    for b in DSH_BINS + (CLAUDE_BINS if claude_side else ()):
         done = place_link(bin_dir / b, PKG / "bin" / b, HOME / ".local/state/dsh-claude-bridge/backups")
         if done:
             step(f"{bin_dir / b}: {done}")
 
-    # Backups go outside skills/, or Claude Code would load the old copy as a second skill.
-    done = place_link(HOME / ".claude/skills/dsh-harness", PKG / "skills/dsh-harness", HOME / ".claude/skills-backup")
-    if done:
-        step(f"skill dsh-harness: {done}")
+    if claude_side:
+        # Backups go outside skills/, or Claude Code would load the old copy as a second skill.
+        done = place_link(HOME / ".claude/skills/dsh-harness", PKG / "skills/dsh-harness", HOME / ".claude/skills-backup")
+        if done:
+            step(f"skill dsh-harness: {done}")
+    else:
+        step("Claude Code side skipped: `claude` not found on PATH (install Claude Code, then re-run setup)")
 
     ver_rc, dsh_ver = sh([node, str(dsh_bin), "--version"], timeout=60)
     for p in c["PROFILES_LIST"]:
@@ -629,7 +655,10 @@ def uninstall(c, dry_run=False, purge=False):
     mjson = HOME / ".config/mcacp/mcacp.json"
     others = [k for k in (json.loads(mjson.read_text()).get("agent_servers", {}) if mjson.exists() else {}) if k != "dsh"]
     if drop(mjson, "agent_servers", "dsh") and not others:
-        do("unregister mcacp from Claude Code", lambda: ran(["claude", "mcp", "remove", "mcacp", "-s", "user"]))
+        if claude_found():
+            do("unregister mcacp from Claude Code", lambda: ran(["claude", "mcp", "remove", "mcacp", "-s", "user"]))
+        else:
+            print("- mcacp stays registered in Claude Code (`claude` not found): run `claude mcp remove mcacp -s user` after reinstalling Claude Code")
         mdir = HOME / ".local/share/mcacp"
         if (mdir / "package.json").exists() and json.loads((mdir / "package.json").read_text()).get("name") == "mcacp-local":
             do(f"delete {mdir} (installed by setup)", lambda: shutil.rmtree(mdir))
@@ -710,7 +739,7 @@ def main():
     u.add_argument("--dry-run", action="store_true", help="print what would be removed")
     u.add_argument("--purge", action="store_true", help="also delete the config, turn events and helper state")
     a = ap.parse_args()
-    c = load_config()
+    c = effective(load_config()) if a.cmd in ("doctor", "setup") else load_config()
     if a.cmd == "doctor":
         rep = check(c, a.live)
         print(f"\n{'all good' if not rep.missing else str(rep.missing) + ' missing'}")

@@ -1,5 +1,5 @@
 """Unit tests for bin/dsh-claude-bridge (no dsh, network or real config needed)."""
-import importlib.machinery, importlib.util, os, tempfile, unittest
+import importlib.machinery, importlib.util, os, sys, tempfile, unittest
 from pathlib import Path
 
 BIN = Path(__file__).resolve().parent.parent / "bin" / "dsh-claude-bridge"
@@ -235,6 +235,16 @@ class UninstallTests(unittest.TestCase):
         self.assertEqual(json.loads(sp.read_text()), {"model": "m", "hooks": {"Stop": [other]}})
         self.assertTrue(list((self.home / ".local/state/dsh-claude-bridge/backups").glob("settings.json.*")))
 
+    def test_uninstall_without_claude_does_not_crash_on_the_mcacp_entry(self):
+        def no_claude(args, **kw):
+            if args[0] == "claude":
+                raise FileNotFoundError(2, "No such file or directory", "claude")
+            return self.calls.append(list(map(str, args))) or (0, "")
+        self.saved.setdefault("claude_found", bridge.claude_found)  # save the real one before stubbing it
+        bridge.sh, bridge.claude_found = no_claude, (lambda: False)
+        self.assertEqual(bridge.uninstall(self.c, dry_run=False, purge=False), 0)
+        self.assertFalse((self.home / ".config/mcacp/mcacp.json").exists())
+
     def test_purge_also_removes_config_and_events(self):
         bridge.uninstall(self.c, dry_run=False, purge=True)
         self.assertFalse(bridge.CONFIG.exists())
@@ -328,6 +338,135 @@ class ClaudeDoneHookTests(unittest.TestCase):
         blocked.write_text("x")
         r = self.run_hook('{"session_id": "s"}', blocked / "sub" / "turns.jsonl")  # parent is a file: write fails
         self.assertEqual((r.returncode, r.stdout), (0, ""))
+
+
+class DetectionTests(unittest.TestCase):
+    """setup/doctor install the Claude Code side only when Claude Code is found (ticket #2)."""
+
+    def setUp(self):
+        self.saved = {k: getattr(bridge, k) for k in ("claude_found", "find_node", "find_dsh_bin", "HOME", "CONFIG")}
+
+    def tearDown(self):
+        for k, v in self.saved.items():
+            setattr(bridge, k, v)
+
+    def test_without_claude_every_claude_side_feature_is_off(self):
+        bridge.claude_found = lambda: False
+        e = bridge.effective(cfg())
+        self.assertEqual({k: e[k] for k in ("HELPERS", "MCACP", "CHANNEL", "CLAUDE_DONE")},
+                         {"HELPERS": "provider", "MCACP": "0", "CHANNEL": "0", "CLAUDE_DONE": "0"})
+        self.assertFalse(e["CLAUDE_SIDE"])
+        web = bridge.managed_block(e, "web")
+        self.assertIn("- id: subagent-claude-code\n", web)  # provider helper: runs the SDK's own binary
+        self.assertNotIn("subagent-claude-code-claude", web)  # Claude-login helper needs Claude Code
+        self.assertNotIn("dsh-claude-channel", web)
+        self.assertIn("- id: llm-pi-ai", web)  # the dsh side stays
+
+    def test_helpers_mapping_without_claude_keeps_invalid_values_visible(self):
+        bridge.claude_found = lambda: False
+        for given, want in (("both", "provider"), ("claude", "none"), ("provider", "provider"), ("none", "none"), ("bogus", "bogus")):
+            self.assertEqual(bridge.effective(cfg(HELPERS=given))["HELPERS"], want, given)
+        self.assertIn("HELPERS must be provider, claude, both or none", bridge.config_problems(bridge.effective(cfg(HELPERS="bogus"))))
+
+    def test_main_applies_detection_to_doctor_and_setup(self):
+        seen = {}
+        saved = (bridge.check, bridge.load_config, sys.argv)
+        try:
+            bridge.claude_found = lambda: False
+            c0 = cfg()
+            bridge.load_config = lambda: c0
+            bridge.check = lambda c, live=False: seen.setdefault("c", c) and type("R", (), {"missing": 0})()
+            sys.argv = ["dsh-claude-bridge", "doctor"]
+            import io, contextlib
+            with contextlib.redirect_stdout(io.StringIO()):
+                bridge.main()
+        finally:
+            bridge.check, bridge.load_config, sys.argv = saved
+        self.assertFalse(seen["c"]["CLAUDE_SIDE"])
+
+    def _home(self):
+        home = Path(tempfile.mkdtemp())
+        bridge.HOME, bridge.DSH_HOME, bridge.CONFIG = home, home / ".dsh", home / ".config/dsh-claude-bridge/config"
+        for p in ("web", "acp", "headless"):
+            (home / ".dsh/profiles" / p).mkdir(parents=True)
+        bridge.find_node, bridge.find_dsh_bin = (lambda: "/usr/bin/node"), (lambda: Path("/x/dsh/lib/bin.js"))
+        bridge.node_version = lambda n: (26, 0, 0)
+        bridge.sh = lambda args, **kw: (0, "")
+        bridge.dump_config = lambda *a, **k: "- id: dsh-claude-bridge\n"
+        return home
+
+    def run_setup(self, found):
+        import io, contextlib
+        self.saved.update({k: getattr(bridge, k) for k in ("DSH_HOME", "sh", "dump_config", "node_version")})
+        home = self._home()
+        bridge.claude_found = lambda: found
+        c = bridge.effective(cfg(BIN_DIR=str(home / "bin"), MCACP="0"))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = bridge.setup(c, "file:/x")
+        return home, rc, out.getvalue()
+
+    def test_setup_without_claude_installs_the_dsh_side_only(self):
+        home, rc, out = self.run_setup(False)
+        self.assertEqual(rc, 0, out)
+        self.assertFalse((home / ".claude").exists())
+        self.assertEqual(sorted(p.name for p in (home / "bin").iterdir()), sorted(bridge.DSH_BINS))
+        self.assertFalse(bridge.channel_mcp_file().exists())
+        self.assertIn("Claude Code side skipped", out)
+        self.assertNotIn("dsh-claude-channel", (home / ".dsh/profiles/web/cordis.patch.yml").read_text())
+
+    def test_setup_with_claude_installs_both_sides(self):
+        home, rc, out = self.run_setup(True)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(sorted(p.name for p in (home / "bin").iterdir()), sorted(bridge.BINS))
+        self.assertTrue((home / ".claude/skills/dsh-harness").is_symlink())
+        self.assertIn("/claude-turn-event", (home / ".claude/settings.json").read_text())
+        self.assertTrue(bridge.channel_mcp_file().exists())
+        self.assertNotIn("Claude Code side skipped", out)
+
+    def test_doctor_without_claude_reports_skipped_not_missing(self):
+        import io, contextlib
+        self.saved.update({k: getattr(bridge, k) for k in ("DSH_HOME", "sh", "dump_config", "node_version")})
+        home = self._home()
+        bridge.claude_found = lambda: False
+        out = io.StringIO()
+        saved_path = os.environ["PATH"]
+        os.environ["PATH"] = str(home / "bin")  # only this test's links count, not the ones installed on the machine
+        try:
+            with contextlib.redirect_stdout(out):
+                bridge.check(bridge.effective(cfg(BIN_DIR=str(home / "bin"))))
+        finally:
+            os.environ["PATH"] = saved_path
+        self.assertIn("[warn]    Claude Code side skipped", out.getvalue())
+        for name in ("claude-dsh", "claude-turn-event", "dsh-claude-channel", "skill dsh-harness", "Stop hook", "channel config", "mcacp"):
+            self.assertNotIn(name, "\n".join(l for l in out.getvalue().splitlines() if l.startswith("[missing]")), name)
+
+    def test_with_claude_the_config_is_unchanged(self):
+        bridge.claude_found = lambda: True
+        c = cfg(HELPERS="claude", CHANNEL="0")
+        e = bridge.effective(c)
+        self.assertTrue(e["CLAUDE_SIDE"])
+        self.assertEqual({k: e[k] for k in ("HELPERS", "MCACP", "CHANNEL", "CLAUDE_DONE")},
+                         {k: c[k] for k in ("HELPERS", "MCACP", "CHANNEL", "CLAUDE_DONE")})
+
+    def test_bins_split_by_side(self):
+        self.assertEqual(set(bridge.DSH_BINS) | set(bridge.CLAUDE_BINS), set(bridge.BINS))
+        self.assertEqual(set(bridge.DSH_BINS) & set(bridge.CLAUDE_BINS), set())
+        self.assertIn("claude-dsh", bridge.CLAUDE_BINS)
+        self.assertIn("dsh-wait-turn", bridge.DSH_BINS)
+
+    def test_no_dsh_writes_nothing_and_names_dsh(self):
+        import io, contextlib
+        home = Path(tempfile.mkdtemp())
+        bridge.HOME, bridge.CONFIG = home, home / ".config/dsh-claude-bridge/config"
+        bridge.find_node, bridge.find_dsh_bin = (lambda: "/usr/bin/node"), (lambda: None)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = bridge.setup(None, "github:x#v1")
+        self.assertEqual(rc, 2)
+        self.assertEqual(list(home.rglob("*")), [])
+        self.assertEqual(len(out.getvalue().strip().splitlines()), 1)
+        self.assertIn("@deepseek-ai/dsh", out.getvalue())
 
 
 class CliTests(unittest.TestCase):

@@ -1,6 +1,6 @@
 {
   "name": "dsh-claude-bridge",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Claude Code <-> DeepSeek Harness (dsh) bridge: finished-turn events, an event-driven wait CLI, doctor/setup for acpx, mcacp and the Claude Code helpers (provider and Claude brains), and the dsh-harness skill.",
   "type": "module",
   "main": "./index.mjs",
